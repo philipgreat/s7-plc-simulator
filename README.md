@@ -1,60 +1,137 @@
 # S7 PLC Simulator
 
-A simulated S7 PLC for testing [s7-connector-rs](https://github.com/philipgreat/s7-connector-rs).
+A simulated S7 PLC with Web Admin API for testing [s7-connector-rs](https://github.com/philipgreat/s7-connector-rs).
 
 ## Features
 
-- Simulates S7-300/400/1200/1500 PLCs
-- Maintains internal state (memory areas)
-- Supports TCP/IP connections on port 102
-- Pre-loaded data blocks for testing
-- Full S7 protocol handshake (COTP + S7)
+- **S7 Protocol Server** - Simulates S7-300/400/1200/1500 PLCs on port 102
+- **Web Admin API** - REST API for managing memory and data blocks
+- **Admin Dashboard** - Web UI for viewing and editing DB blocks
+- **Shared Memory** - Both servers use the same memory state
 
-## Memory Areas
-
-- **Inputs (I)** - 256 bytes
-- **Outputs (Q)** - 256 bytes
-- **Flags (M)** - 1024 bytes
-- **Data Blocks (DB)** - Multiple pre-loaded DBs
-
-## Pre-loaded Data Blocks
-
-| DB | Size | Content |
-|----|------|---------|
-| DB1 | 256 bytes | General data (zeros) |
-| DB2 | 128 bytes | Counter values |
-| DB3 | 128 bytes | Timer values |
-| DB10 | 64 bytes | Real values: [1.5, 2.5, 3.14, 100.0] |
-| DB11 | 32 bytes | Integer values: [100, -200, 300, -400, 500, -600, 700, -800] |
-| DB20 | 128 bytes | String: "Hello World!" |
-
-## Installation
+## Quick Start
 
 ```bash
+# Build
 cargo build --release
-```
 
-## Usage
-
-```bash
-# Default (S7-300, port 102)
+# Run (default ports: S7=102, Web=8080)
 cargo run
 
-# Custom settings
-cargo run -- --port 102 --plc-type S7-1500 --rack 0 --slot 1 --verbose
-
-# Or use the binary
-./target/release/s7-plc-simulator --port 102 --plc-type S7-300
+# Or use custom ports
+cargo run -- --s7-port 102 --web-port 8080
 ```
 
-## Command Line Options
+Then open http://localhost:8080/ in your browser.
+
+## Architecture
 
 ```
--s, --port <PORT>      Port to listen on (default: 102)
--t, --plc-type <TYPE>  PLC type (default: S7-300)
--r, --rack <RACK>      Rack number (default: 0)
--s, --slot <SLOT>      Slot number (default: 2)
--v, --verbose          Verbose output
+s7-plc-simulator/
+├── src/
+│   ├── main.rs       # Entry point, spawns both servers
+│   ├── lib.rs        # S7 protocol handler
+│   ├── memory.rs     # PLC memory management
+│   ├── api/
+│   │   └── mod.rs    # REST API handlers
+│   └── static/
+│       └── admin.html # Web admin dashboard
+└── Cargo.toml
+```
+
+## Modules
+
+### `memory.rs` - Memory Management
+- Input markers (I) - 256 bytes
+- Output markers (Q) - 256 bytes  
+- Flags (M) - 1024 bytes
+- Data Blocks (DB) - Dynamic, pre-loaded with test data
+
+### `lib.rs` - S7 Protocol Handler
+- COTP handshake
+- S7 Setup Communication
+- Read/Write requests
+
+### `api/mod.rs` - REST API
+- Web server using Axum
+- All API endpoints
+
+## Web Admin Dashboard
+
+Access at http://localhost:8080/
+
+Features:
+- View all data blocks
+- Read/Write bytes, INT, REAL, STRING
+- Create/Delete data blocks
+- Clear data block contents
+- View Inputs/Outputs/Flags
+
+## REST API Endpoints
+
+### Data Blocks
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/dbs` | List all DBs |
+| GET | `/api/db/:number` | Get DB content |
+| POST | `/api/db` | Create new DB |
+| DELETE | `/api/db/:number` | Delete DB |
+| POST | `/api/db/:number/write` | Write single value |
+| POST | `/api/db/:number/write-multi` | Write multiple values |
+| POST | `/api/db/:number/clear` | Clear DB |
+
+### Memory Areas
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/memory/inputs` | Get Inputs (I) |
+| GET | `/api/memory/outputs` | Get Outputs (Q) |
+| GET | `/api/memory/flags` | Get Flags (M) |
+
+### Other
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | Web Admin Dashboard |
+| GET | `/health` | Health check |
+
+## API Examples
+
+```bash
+# List all data blocks
+curl http://localhost:8080/api/dbs
+
+# Get DB1 content
+curl http://localhost:8080/api/db/1
+
+# Create new DB
+curl -X POST http://localhost:8080/api/db \
+  -H "Content-Type: application/json" \
+  -d '{"number": 100, "size": 512}'
+
+# Write INT value
+curl -X POST http://localhost:8080/api/db/1/write \
+  -H "Content-Type: application/json" \
+  -d '{"offset": 0, "data_type": "int", "value": 1234}'
+
+# Write REAL value  
+curl -X POST http://localhost:8080/api/db/1/write \
+  -H "Content-Type: application/json" \
+  -d '{"offset": 4, "data_type": "real", "value": 3.14159}'
+
+# Write STRING
+curl -X POST http://localhost:8080/api/db/1/write \
+  -H "Content-Type: application/json" \
+  -d '{"offset": 8, "data_type": "string", "value": "Hello"}'
+
+# Write HEX bytes
+curl -X POST http://localhost:8080/api/db/1/write \
+  -H "Content-Type: application/json" \
+  -d '{"offset": 0, "data_type": "hex", "value": "DEADBEEF"}'
+
+# Clear DB
+curl -X POST http://localhost:8080/api/db/1/clear
+
+# Delete DB
+curl -X DELETE http://localhost:8080/api/db/100
 ```
 
 ## Testing with s7-connector-rs
@@ -64,22 +141,22 @@ Start the simulator:
 cargo run
 ```
 
-In another terminal, test with s7-connector-rs:
+In another terminal, test connection:
 ```bash
 cd ../s7-connector-rs
-cargo run --example read_db
+cargo run --example basic_connect
 ```
 
-## Protocol Support
+## Pre-loaded Data Blocks
 
-- [x] COTP Connection Request/Confirm
-- [x] S7 Setup Communication
-- [x] S7 Read (Function 0x04)
-- [x] S7 Write (Function 0x05)
-- [ ] S7 Variable List Read
-- [ ] S7 Variable List Write
-- [ ] Block operations
-- [ ] Date/Time operations
+| DB | Size | Content |
+|----|------|---------|
+| DB1 | 256 bytes | General data (zeros) |
+| DB2 | 128 bytes | Counter values |
+| DB3 | 128 bytes | Timer values |
+| DB10 | 64 bytes | Real values: [1.5, 2.5, 3.14, 100.0] |
+| DB11 | 32 bytes | Integer values: [100, -200, 300, -400, ...] |
+| DB20 | 128 bytes | String: "Hello World!" |
 
 ## License
 

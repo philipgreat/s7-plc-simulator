@@ -1,33 +1,37 @@
 //!
-//! S7 PLC Simulator CLI
+//! S7 PLC Simulator - Main Entry Point
 //! 
-//! A simulated S7 PLC for testing S7 Connector
+//! Starts both S7 protocol server and Web Admin API
 
 use clap::Parser;
 use tracing_subscriber::prelude::*;
-use s7_plc_simulator::PlcSimulator;
+use s7_plc_simulator::{create_shared_memory, PlcSimulator, api};
 
 #[derive(Parser)]
 #[command(name = "s7-plc-simulator")]
-#[command(about = "S7 PLC Simulator for testing", long_about = None)]
+#[command(about = "S7 PLC Simulator with Web Admin", long_about = None)]
 struct Cli {
-    /// Port to listen on
+    /// S7 port (default: 102)
     #[arg(short, long, default_value_t = 102)]
-    port: u16,
+    s7_port: u16,
     
-    /// PLC type (S7-300, S7-1500, etc.)
+    /// Web API port (default: 8080)
+    #[arg(short, long, default_value_t = 8080)]
+    web_port: u16,
+    
+    /// PLC type
     #[arg(short, long, default_value = "S7-300")]
     plc_type: String,
     
     /// Rack number
-    #[arg(short, long, default_value_t = 0)]
+    #[arg(short = 'R', long, default_value_t = 0)]
     rack: u8,
     
     /// Slot number
-    #[arg(short, long, default_value_t = 2)]
+    #[arg(short = 'S', long, default_value_t = 2)]
     slot: u8,
     
-    /// Verbose output
+    /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     verbose: bool,
 }
@@ -38,11 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     // Initialize logging
     let filter = if cli.verbose {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"))
+        tracing_subscriber::EnvFilter::new("debug")
     } else {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        tracing_subscriber::EnvFilter::new("info")
     };
     
     tracing_subscriber::registry()
@@ -50,30 +52,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with(filter)
         .init();
     
-    println!("╔════════════════════════════════════════════╗");
-    println!("║        S7 PLC Simulator                    ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║  Type:  {}                                ║", cli.plc_type);
-    println!("║  Rack:  {}                                ║", cli.rack);
-    println!("║  Slot:  {}                                ║", cli.slot);
-    println!("║  Port:  {}                                ║", cli.port);
-    println!("╚════════════════════════════════════════════╝");
+    // Print banner
+    println!();
+    println!("╔══════════════════════════════════════════════════╗");
+    println!("║           S7 PLC Simulator v0.2                 ║");
+    println!("╠══════════════════════════════════════════════════╣");
+    println!("║  ⚙️  S7 Protocol Port:  {}                      ║", format!("{:>5}", cli.s7_port));
+    println!("║  🌐 Web Admin Port:     {}                      ║", format!("{:>5}", cli.web_port));
+    println!("║  🖥️  PLC Type:          {:<24}║", cli.plc_type);
+    println!("║  📍 Rack/Slot:          {}/{}                        ║", cli.rack, cli.slot);
+    println!("╚══════════════════════════════════════════════════╝");
     println!();
     
-    // Print pre-loaded data blocks
-    println!("Pre-loaded Data Blocks:");
-    println!("  DB1  - General data (256 bytes)");
-    println!("  DB2  - Counter values (128 bytes)");
-    println!("  DB3  - Timer values (128 bytes)");
-    println!("  DB10 - Real values (64 bytes, test floats)");
-    println!("  DB11 - Integer values (32 bytes, test ints)");
-    println!("  DB20 - String test (128 bytes, 'Hello World!')");
-    println!();
+    // Create shared memory
+    let memory = create_shared_memory();
     
-    println!("Waiting for S7 connections on 0.0.0.0:{}...", cli.port);
+    // Print memory info
+    {
+        let mem = memory.read().unwrap();
+        let dbs = mem.list_dbs();
+        println!("📦 Pre-loaded Data Blocks:");
+        for db in &dbs {
+            println!("   DB{} - {} bytes", db.number, db.size);
+        }
+        println!();
+    }
+    
+    println!("🌐 Web Admin: http://localhost:{}/", cli.web_port);
+    println!("⚙️  S7 Server:  0.0.0.0:{}", cli.s7_port);
+    println!();
     println!("Press Ctrl+C to stop");
     println!();
     
-    // Start server
-    PlcSimulator::start_server(cli.port, &cli.plc_type, cli.rack, cli.slot).await
+    // Spawn S7 server
+    let memory_clone = memory.clone();
+    let plc_type = cli.plc_type.clone();
+    let s7_port = cli.s7_port;
+    let rack = cli.rack;
+    let slot = cli.slot;
+    
+    let s7_handle = tokio::spawn(async move {
+        PlcSimulator::start_s7_server(s7_port, memory_clone, &plc_type, rack, slot).await
+    });
+    
+    // Start Web API server
+    let web_handle = tokio::spawn(async move {
+        api::start_server(cli.web_port, memory, cli.s7_port).await
+    });
+    
+    // Wait for either to finish
+    tokio::select! {
+        result = s7_handle => {
+            if let Err(e) = result {
+                eprintln!("S7 server error: {}", e);
+            }
+        }
+        result = web_handle => {
+            if let Err(e) = result {
+                eprintln!("Web server error: {}", e);
+            }
+        }
+    }
+    
+    Ok(())
 }

@@ -1,8 +1,8 @@
 [package]
 name = "s7-plc-simulator"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Simulated S7 PLC for testing S7 Connector"
+description = "Simulated S7 PLC with Web Admin API"
 license = "MIT"
 authors = ["philipgreat"]
 
@@ -13,7 +13,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 bytes = "1"
 thiserror = "1"
-rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+hex = "0.4"
 
 [lib]
 name = "s7_plc_simulator"

@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S7 PLC Simulator - Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+        
+        .header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .header h1 {
+            color: #00d4ff;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00ff88;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: #00d4ff;
+            color: #000;
+        }
+        
+        .btn-primary:hover {
+            background: #00b8e6;
+            transform: translateY(-1px);
+        }
+        
+        .btn-danger {
+            background: #ff4757;
+            color: #fff;
+        }
+        
+        .btn-danger:hover {
+            background: #ff3344;
+        }
+        
+        .btn-success {
+            background: #2ed573;
+            color: #000;
+        }
+        
+        .btn-success:hover {
+            background: #26b863;
+        }
+        
+        .db-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        
+        .db-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+        
+        .db-item:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: #00d4ff;
+        }
+        
+        .db-item.selected {
+            border-color: #00d4ff;
+            background: rgba(0, 212, 255, 0.15);
+        }
+        
+        .db-number {
+            font-size: 24px;
+            font-weight: 700;
+            color: #00d4ff;
+        }
+        
+        .db-size {
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        .db-viewer {
+            display: none;
+        }
+        
+        .db-viewer.active {
+            display: block;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        
+        .data-table th, .data-table td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .data-table th {
+            background: rgba(0, 0, 0, 0.3);
+            color: #888;
+            font-weight: 500;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+        
+        .data-table tr:hover {
+            background: rgba(0, 212, 255, 0.05);
+        }
+        
+        .hex-view {
+            font-family: 'Courier New', monospace;
+            color: #00ff88;
+            letter-spacing: 1px;
+        }
+        
+        .int-view {
+            color: #ffd700;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .real-view {
+            color: #ff6b9d;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 25px;
+            min-width: 400px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 5px;
+            color: #888;
+            font-size: 13px;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 14px;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .memory-section {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+        
+        .memory-block {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+        }
+        
+        .memory-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #00d4ff;
+            margin-bottom: 10px;
+        }
+        
+        .memory-hex {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #00ff88;
+            word-break: break-all;
+            max-height: 100px;
+            overflow: auto;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            background: #2ed573;
+            color: #000;
+            border-radius: 8px;
+            font-weight: 500;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s;
+        }
+        
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        
+        .toast.error {
+            background: #ff4757;
+            color: #fff;
+        }
+        
+        .write-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .write-form input, .write-form select {
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+        }
+        
+        .write-form input {
+            width: 120px;
+        }
+        
+        .write-form select {
+            width: 100px;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            background: rgba(0, 0, 0, 0.3);
+            border: none;
+            border-radius: 6px 6px 0 0;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .tab.active {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚡ S7 PLC Simulator</h1>
+        <div class="status">
+            <div class="status-dot"></div>
+            <span>S7 Port: <strong id="s7Port">102</strong></span>
+            <span>DBs: <strong id="dbCount">0</strong></span>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="tabs">
+            <button class="tab active" data-tab="datablocks">Data Blocks</button>
+            <button class="tab" data-tab="memory">Memory Areas</button>
+        </div>
+        
+        <!-- Data Blocks Tab -->
+        <div id="datablocks-tab" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📦 Data Blocks</span>
+                    <button class="btn btn-primary" onclick="showCreateModal()">+ New DB</button>
+                </div>
+                <div class="db-list" id="dbList"></div>
+            </div>
+            
+            <div class="card db-viewer" id="dbViewer">
+                <div class="card-header">
+                    <span class="card-title">📄 DB<span id="currentDb">1</span></span>
+                    <div>
+                        <button class="btn btn-success" onclick="showWriteModal()">✏️ Write</button>
+                        <button class="btn btn-danger" onclick="clearDb()">🗑️ Clear</button>
+                        <button class="btn" onclick="closeViewer()">✖ Close</button>
+                    </div>
+                </div>
+                <div class="write-form" id="writeForm" style="display: none;">
+                    <input type="number" id="writeOffset" placeholder="Offset" min="0">
+                    <select id="writeType">
+                        <option value="byte">BYTE</option>
+                        <option value="word">WORD</option>
+                        <option value="dword">DWORD</option>
+                        <option value="int">INT</option>
+                        <option value="real">REAL</option>
+                        <option value="string">STRING</option>
+                        <option value="hex">HEX</option>
+                    </select>
+                    <input type="text" id="writeValue" placeholder="Value">
+                    <button class="btn btn-success" onclick="writeValue()">Write</button>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Offset</th>
+                            <th>Hex</th>
+                            <th>Bytes</th>
+                            <th>INT</th>
+                            <th>REAL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dbContent"></tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Memory Areas Tab -->
+        <div id="memory-tab" class="tab-content" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">🔧 Memory Areas</span>
+                </div>
+                <div class="memory-section">
+                    <div class="memory-block">
+                        <div class="memory-title">Inputs (I) - 256 bytes</div>
+                        <div class="memory-hex" id="inputsHex"></div>
+                    </div>
+                    <div class="memory-block">
+                        <div class="memory-title">Outputs (Q) - 256 bytes</div>
+                        <div class="memory-hex" id="outputsHex"></div>
+                    </div>
+                    <div class="memory-block">
+                        <div class="memory-title">Flags (M) - 1024 bytes</div>
+                        <div class="memory-hex" id="flagsHex"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create DB Modal -->
+    <div class="modal" id="createModal">
+        <div class="modal-content">
+            <div class="modal-title">Create New Data Block</div>
+            <div class="form-group">
+                <label class="form-label">DB Number</label>
+                <input type="number" class="form-input" id="newDbNumber" min="1" max="65535">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Size (bytes)</label>
+                <input type="number" class="form-input" id="newDbSize" min="1" value="256">
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeCreateModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="createDb()">Create</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+    
+    <script>
+        let currentDb = null;
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadDbs();
+            
+            // Tab switching
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', () => {
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    
+                    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+                    document.getElementById(tab.dataset.tab + '-tab').style.display = 'block';
+                    
+                    if (tab.dataset.tab === 'memory') {
+                        loadMemory();
+                    }
+                });
+            });
+        });
+        
+        // Load data blocks
+        async function loadDbs() {
+            try {
+                const res = await fetch('/api/dbs');
+                const data = await res.json();
+                
+                document.getElementById('dbCount').textContent = data.count;
+                
+                const list = document.getElementById('dbList');
+                list.innerHTML = '';
+                
+                data.data_blocks.forEach(db => {
+                    const item = document.createElement('div');
+                    item.className = 'db-item' + (currentDb === db.number ? ' selected' : '');
+                    item.innerHTML = `
+                        <div class="db-number">DB${db.number}</div>
+                        <div class="db-size">${db.size} bytes</div>
+                    `;
+                    item.onclick = () => selectDb(db.number);
+                    list.appendChild(item);
+                });
+            } catch (e) {
+                showToast('Failed to load DBs', true);
+            }
+        }
+        
+        // Select DB
+        async function selectDb(number) {
+            currentDb = number;
+            
+            // Update UI
+            document.querySelectorAll('.db-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            event.target.closest('.db-item').classList.add('selected');
+            
+            document.getElementById('currentDb').textContent = number;
+            document.getElementById('dbViewer').classList.add('active');
+            
+            // Load DB content
+            try {
+                const res = await fetch(`/api/db/${number}`);
+                const data = await res.json();
+                
+                const tbody = document.getElementById('dbContent');
+                tbody.innerHTML = '';
+                
+                data.data.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>0x${row.offset.toString(16).toUpperCase().padStart(4, '0')}</td>
+                        <td class="hex-view">${row.hex}</td>
+                        <td>${row.bytes.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}</td>
+                        <td class="int-view">${row.as_int ?? '-'}</td>
+                        <td class="real-view">${row.as_real?.toFixed(4) ?? '-'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                showToast('Failed to load DB content', true);
+            }
+        }
+        
+        // Close viewer
+        function closeViewer() {
+            document.getElementById('dbViewer').classList.remove('active');
+            currentDb = null;
+            loadDbs();
+        }
+        
+        // Show create modal
+        function showCreateModal() {
+            document.getElementById('createModal').classList.add('active');
+            document.getElementById('newDbNumber').value = '';
+            document.getElementById('newDbSize').value = '256';
+        }
+        
+        // Close create modal
+        function closeCreateModal() {
+            document.getElementById('createModal').classList.remove('active');
+        }
+        
+        // Create DB
+        async function createDb() {
+            const number = parseInt(document.getElementById('newDbNumber').value);
+            const size = parseInt(document.getElementById('newDbSize').value);
+            
+            if (!number || !size) {
+                showToast('Please fill all fields', true);
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/db', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ number, size })
+                });
+                
+                if (res.ok) {
+                    showToast(`DB${number} created`);
+                    closeCreateModal();
+                    loadDbs();
+                } else {
+                    showToast('Failed to create DB', true);
+                }
+            } catch (e) {
+                showToast('Failed to create DB', true);
+            }
+        }
+        
+        // Clear DB
+        async function clearDb() {
+            if (!currentDb) return;
+            
+            if (!confirm(`Clear all data in DB${currentDb}?`)) return;
+            
+            try {
+                const res = await fetch(`/api/db/${currentDb}/clear`, { method: 'POST' });
+                if (res.ok) {
+                    showToast(`DB${currentDb} cleared`);
+                    selectDb(currentDb);
+                }
+            } catch (e) {
+                showToast('Failed to clear DB', true);
+            }
+        }
+        
+        // Show write form
+        function showWriteModal() {
+            const form = document.getElementById('writeForm');
+            form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+        }
+        
+        // Write value
+        async function writeValue() {
+            if (!currentDb) return;
+            
+            const offset = parseInt(document.getElementById('writeOffset').value);
+            const type = document.getElementById('writeType').value;
+            const value = document.getElementById('writeValue').value;
+            
+            if (isNaN(offset) || !value) {
+                showToast('Please fill all fields', true);
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/db/${currentDb}/write`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ offset, value, data_type: type })
+                });
+                
+                if (res.ok) {
+                    showToast('Value written');
+                    selectDb(currentDb);
+                } else {
+                    showToast('Write failed', true);
+                }
+            } catch (e) {
+                showToast('Write failed', true);
+            }
+        }
+        
+        // Load memory areas
+        async function loadMemory() {
+            const areas = ['inputs', 'outputs', 'flags'];
+            for (const area of areas) {
+                try {
+                    const res = await fetch(`/api/memory/${area}`);
+                    const data = await res.json();
+                    document.getElementById(area + 'Hex').textContent = data.hex;
+                } catch (e) {
+                    console.error('Failed to load', area);
+                }
+            }
+        }
+        
+        // Toast
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast' + (isError ? ' error' : '');
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
