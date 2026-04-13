@@ -196,6 +196,7 @@ impl PlcSimulator {
         
         let mut response_data = Vec::new();
         let mut offset = 2;
+        let mut read_items = Vec::new();
         
         for _ in 0..item_count {
             if offset + 2 > params.len() { break; }
@@ -223,12 +224,17 @@ impl PlcSimulator {
                         response_data.push(TransportSize::Byte as u8);
                         response_data.push((length >> 8) as u8);
                         response_data.push((length & 0xFF) as u8);
-                        response_data.extend(data);
+                        response_data.extend(data.clone());
+                        let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                        read_items.push(format!("{:?}[{}] offset={} len={} data=[{}]",
+                            area, db_num, start, length, hex_str));
                     }
                     None => {
                         response_data.push(0x0A);
                         response_data.push(0x00);
                         response_data.push(0x00);
+                        read_items.push(format!("{:?}[{}] offset={} len={} FAIL",
+                            area, db_num, start, length));
                     }
                 }
             } else {
@@ -248,6 +254,10 @@ impl PlcSimulator {
             FunctionCode::Read as u8, item_count as u8,
         ];
         response.extend(response_data);
+        
+        if !read_items.is_empty() {
+            info!("[READ] items={} {}", read_items.len(), read_items.join(" | "));
+        }
         
         Some(response)
     }
@@ -270,6 +280,7 @@ impl PlcSimulator {
         
         let mut success_count = 0;
         offset = 2;
+        let mut write_items = Vec::new();
         
         for _ in 0..item_count {
             if offset + 2 > params.len() { break; }
@@ -295,7 +306,12 @@ impl PlcSimulator {
                     let data = &params[param_end..param_end + length as usize];
                     if memory.write(area, db_num, start as usize, data) {
                         success_count += 1;
-                        debug!("Wrote {} bytes to {:?} DB{}", length, area, db_num);
+                        let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                        write_items.push(format!("{:?}[{}] offset={} len={} data=[{}] OK",
+                            area, db_num, start, length, hex_str));
+                    } else {
+                        write_items.push(format!("{:?}[{}] offset={} len={} FAIL",
+                            area, db_num, start, length));
                     }
                 }
             }
@@ -311,7 +327,9 @@ impl PlcSimulator {
             FunctionCode::Write as u8, item_count as u8,
         ];
         
-        info!("Write: {}/{} items", success_count, item_count);
+        if !write_items.is_empty() {
+            info!("[WRITE] items={}/{} {}", success_count, item_count, write_items.join(" | "));
+        }
         
         Some(response)
     }
