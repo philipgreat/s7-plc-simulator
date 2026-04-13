@@ -65,7 +65,7 @@ impl PlcSimulator {
     /// Handle incoming connection
     pub async fn handle_connection(&self, mut stream: tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = stream.peer_addr()?;
-        info!("S7 connection from: {}", addr);
+        info!("[S7] +++ CONNECT from {}", addr);
         
         // Receive COTP CR
         let mut cotp_buf = vec![0u8; 50];
@@ -98,9 +98,10 @@ impl PlcSimulator {
                 Ok(_) => {}
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                        info!("Client disconnected: {}", addr);
+                        info!("[S7] --- CLOSE (EOF) from {}", addr);
                         return Ok(());
                     }
+                    info!("[S7] --- CLOSE (error) from {}: {}", addr, e);
                     return Err(Box::new(e));
                 }
             }
@@ -335,10 +336,11 @@ impl PlcSimulator {
         
         loop {
             if let Ok((stream, addr)) = listener.accept().await {
+                info!("[S7] Incoming connection from {}", addr);
                 let simulator = PlcSimulator::new(plc_type, rack, slot, memory.clone());
                 tokio::spawn(async move {
                     if let Err(e) = simulator.handle_connection(stream).await {
-                        error!("S7 handler error: {}", e);
+                        error!("[S7] Handler error from {}: {}", addr, e);
                     }
                 });
             }
