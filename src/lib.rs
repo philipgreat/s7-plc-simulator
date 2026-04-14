@@ -67,72 +67,212 @@ impl PlcSimulator {
         let addr = stream.peer_addr()?;
         info!("[S7] +++ CONNECT from {}", addr);
         
-        // Receive COTP CR
-        let mut cotp_buf = vec![0u8; 50];
-        let n = stream.read(&mut cotp_buf).await?;
-        debug!("COTP CR: {} bytes", n);
+        // Buffered reader to handle multiple TPKT packets in one TCP stream
+        use tokio::io::ReadBuf;
+        let mut buf = vec![0u8; 8192];
+        let mut buf_start = 0;
+        let mut buf_end = 0;
         
-        // Send COTP CC (Connection Confirm)
+        // Read TPKT header (4 bytes): version, reserved, length(2 bytes big-endian)
+        loop {
+            if buf_start + 4 > buf_end {
+                // Need more data
+                let remaining = buf_end - buf_start;
+                buf.copy_within(buf_start..buf_end, 0);
+                buf_start = 0;
+                buf_end = remaining;
+                let n = stream.read(&mut buf[buf_end..]).await?;
+                if n == 0 {
+                    info!("[S7] --- CLOSE (EOF) from {}", addr);
+                    return Ok(());
+                }
+                buf_end += n;
+                continue;
+            }
+            break;
+        }
+        
+        // Accept TPKT v3 (0x03)
+        if buf[buf_start] != 0x03 {
+            warn!("[S7] Unknown TPKT version: {:#x}, closing connection", buf[buf_start]);
+            return Ok(());
+        }
+        
+        // TPKT length includes all bytes (header + payload)
+        let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
+        let payload_len = tpkt_len - 4;  // Subtract TPKT header
+        buf_start += 4;
+        
+        // Read COTP payload
+        loop {
+            if buf_start + payload_len > buf_end {
+                let remaining = buf_end - buf_start;
+                buf.copy_within(buf_start..buf_end, 0);
+                buf_start = 0;
+                buf_end = remaining;
+                let n = stream.read(&mut buf[buf_end..]).await?;
+                if n == 0 {
+                    info!("[S7] --- CLOSE (EOF) from {}", addr);
+                    return Ok(());
+                }
+                buf_end += n;
+                continue;
+            }
+            break;
+        }
+        
+        let cotp_payload = &buf[buf_start..buf_start + payload_len];
+        buf_start += payload_len;
+        debug!("[S7] COTP CR: {} bytes", payload_len);
+        
+        // Send COTP CC wrapped in TPKT
+        // COTP CC structure: 1-byte code + 1-byte length + 2-byte dst-ref + 2-byte src-ref + 1-byte class + optional params
+        // Optional params: TPDU-size(3) + calling-TSAP(4) + called-TSAP(4) = 11 bytes
+        // Total: 7 + 11 = 18 bytes COTP payload → COTP length field = 18
         let cotp_cc = vec![
-            0x0D, // CC
-            0x00, 0x1A, // Length
-            0x00, 0x00, // Dest ref
-            0x00, 0x01, // Src ref
-            0x00, // Class
-            0xC0, 0x01, // TPDU size
-            0xC1, 0x02, 0x00, 0x00, // Calling TSAP
+            0x0D,                   // CC code
+            0x00, 0x12,             // Length: 18 (COTP payload after this byte)
+            0x00, 0x00,             // Dest ref
+            0x00, 0x01,             // Src ref
+            0x00,                   // Class
+            0xC0, 0x01, 0x0A,      // TPDU size: 1024
+            0xC1, 0x02, 0x00, 0x01, // Calling TSAP
             0xC2, 0x02, 0x00, 0x00, // Called TSAP
         ];
+        let tpkt_cc_len = cotp_cc.len() + 4;  // 22 + 4 = 26
+        let tpkt_cc = vec![
+            0x03, 0x00,
+            (tpkt_cc_len >> 8) as u8, (tpkt_cc_len & 0xFF) as u8,
+        ];
+        stream.write_all(&tpkt_cc).await?;
         stream.write_all(&cotp_cc).await?;
-        debug!("Sent COTP CC");
+        stream.flush().await?;
+        debug!("[S7] Sent COTP CC (TPKT len={})", tpkt_cc_len);
         
-        // Send COTP DT (activate)
-        stream.write_all(&[0x02, 0xF0, 0x80]).await?;
-        debug!("Sent COTP DT");
+        // Send COTP DT (activate) as separate TCP packet
+        // COTP DT: 1-byte DT code + 3 bytes TPDU + 3 bytes padding = 7 bytes COTP payload
+        let cotp_dt: [u8; 7] = [0x02, 0xF0, 0x80, 0x00, 0x00, 0x00, 0x00];
+        let tpkt_dt_len = cotp_dt.len() + 4;  // 7 + 4 = 11
+        let tpkt_dt: [u8; 4] = [
+            0x03, 0x00,
+            (tpkt_dt_len >> 8) as u8, (tpkt_dt_len & 0xFF) as u8,
+        ];
+        stream.write_all(&tpkt_dt).await?;
+        stream.write_all(&cotp_dt).await?;
+        stream.flush().await?;
+        debug!("[S7] Sent COTP DT (TPKT len={})", tpkt_dt_len);
         
-        // Main request loop
+        // Main request loop - read TPKT header first, then S7 packet
         loop {
-            // Read S7 header (10 bytes)
-            let mut header = [0u8; 10];
-            match stream.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            // Read TPKT header (4 bytes)
+            loop {
+                if buf_start + 4 > buf_end {
+                    let remaining = buf_end - buf_start;
+                    buf.copy_within(buf_start..buf_end, 0);
+                    buf_start = 0;
+                    buf_end = remaining;
+                    let n = stream.read(&mut buf[buf_end..]).await?;
+                    if n == 0 {
                         info!("[S7] --- CLOSE (EOF) from {}", addr);
                         return Ok(());
                     }
-                    info!("[S7] --- CLOSE (error) from {}: {}", addr, e);
-                    return Err(Box::new(e));
+                    buf_end += n;
+                    continue;
                 }
+                break;
             }
             
-            // Validate protocol ID
-            if header[0] != PROTOCOL_ID {
-                warn!("Invalid protocol ID: {:#x}", header[0]);
-                continue;
+            // Accept TPKT v3 (0x03)
+            if buf[buf_start] != 0x03 {
+                warn!("[S7] Unknown TPKT: {:#x}, closing", buf[buf_start]);
+                return Ok(());
             }
             
-            // Parse header
-            let pdu_type = header[1];
-            let pdu_ref = ((header[4] as u16) << 8) | (header[5] as u16);
-            let param_len = ((header[6] as u16) << 8) | (header[7] as u16);
-            let data_len = ((header[8] as u16) << 8) | (header[9] as u16);
+            let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
+            let payload_len = tpkt_len - 4;  // Subtract TPKT header
+            buf_start += 4;
             
-            // Read parameter and data
-            let mut param_data = vec![0u8; param_len as usize + data_len as usize];
-            if !param_data.is_empty() {
-                stream.read_exact(&mut param_data).await?;
+            // Read TPKT payload
+            loop {
+                if buf_start + payload_len > buf_end {
+                    let remaining = buf_end - buf_start;
+                    buf.copy_within(buf_start..buf_end, 0);
+                    buf_start = 0;
+                    buf_end = remaining;
+                    let n = stream.read(&mut buf[buf_end..]).await?;
+                    if n == 0 {
+                        info!("[S7] --- CLOSE (EOF) from {}", addr);
+                        return Ok(());
+                    }
+                    buf_end += n;
+                    continue;
+                }
+                break;
             }
             
-            // Handle request
-            let response = self.handle_request(pdu_type, pdu_ref, &param_data).await;
+            let payload = &buf[buf_start..buf_start + payload_len];
+            buf_start += payload_len;
             
-            // Send response
-            if let Some(resp) = response {
-                stream.write_all(&resp).await?;
-                debug!("Sent response: {} bytes", resp.len());
+            // Parse payload (could be COTP DT, S7 packet, or mixed)
+            self.process_payload(&payload, &addr, &mut stream).await?;
+        }
+    }
+    
+    /// Process a TPKT payload (may contain COTP DT and/or S7 packets)
+    async fn process_payload(&self, payload: &[u8], addr: &std::net::SocketAddr, stream: &mut tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut offset = 0;
+        
+        while offset < payload.len() {
+            let remaining = &payload[offset..];
+            
+            if remaining.is_empty() {
+                break;
+            }
+            
+            // Check if it's an S7 packet (starts with 0x32)
+            if remaining[0] == PROTOCOL_ID {
+                // S7 header: 10 bytes
+                if remaining.len() < 10 {
+                    break;
+                }
+                
+                let pdu_type = remaining[1];
+                let pdu_ref = ((remaining[4] as u16) << 8) | (remaining[5] as u16);
+                let param_len = ((remaining[6] as u16) << 8) | (remaining[7] as u16);
+                let data_len = ((remaining[8] as u16) << 8) | (remaining[9] as u16);
+                let total_len = 10 + param_len as usize + data_len as usize;
+                
+                if remaining.len() < total_len {
+                    break;
+                }
+                
+                let mut full_packet = remaining[..total_len].to_vec();
+                offset += total_len;
+                
+                // Handle S7 request
+                let response = self.handle_request(pdu_type, pdu_ref, &full_packet[10..]).await;
+                
+                // Send TPKT-wrapped response
+                if let Some(resp) = response {
+                    let tpkt_resp: Vec<u8> = vec![
+                        0x03, 0x00,
+                        ((resp.len() + 4) >> 8) as u8, ((resp.len() + 4) & 0xFF) as u8,
+                    ];
+                    stream.write_all(&tpkt_resp).await?;
+                    stream.write_all(&resp).await?;
+                    stream.flush().await?;
+                    debug!("[S7] Sent response: {} bytes", resp.len());
+                }
+            } else {
+                // COTP packet (DT or other)
+                // COTP DT: 0x02 0xF0 0x80 ...
+                offset += 1; // Skip COTP byte
+                // Just consume and ignore COTP for now
+                debug!("[S7] Ignoring COTP byte");
             }
         }
+        
+        Ok(())
     }
     
     /// Handle S7 request
@@ -152,11 +292,11 @@ impl PlcSimulator {
                     }
                     0x04 => { // Read
                         debug!("Read request");
-                        self.handle_read_request(pdu_ref, &param_data[1..]).await
+                        self.handle_read_request(pdu_ref, param_data).await
                     }
                     0x05 => { // Write
                         debug!("Write request");
-                        self.handle_write_request(pdu_ref, &param_data[1..]).await
+                        self.handle_write_request(pdu_ref, param_data).await
                     }
                     _ => {
                         warn!("Unknown function: {:#x}", function_code);
@@ -186,74 +326,111 @@ impl PlcSimulator {
     }
     
     /// Handle read request
-    async fn handle_read_request(&self, pdu_ref: u16, params: &[u8]) -> Option<Vec<u8>> {
-        if params.len() < 2 {
+    /// param_data: full S7 params = [function_code, item_count, item_spec...]
+    async fn handle_read_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
+        // S7 Read Request format:
+        // Byte 0: Function code (0x04)
+        // Byte 1: Item count
+        // For each item:
+        //   Byte 0: Specification type (0x12 = variable)
+        //   Byte 1: Length of spec data that follows (typically 0x0A = 10)
+        //   Bytes 2-3: Transport size (0x10) + reserved
+        //   Bytes 4-5: Number of elements (big-endian)
+        //   Bytes 6-7: DB number (big-endian)
+        //   Byte 8: Area code
+        //   Bytes 9-10-11: Byte offset (3 bytes)
+        // Total per item: 2 (header) + var_len bytes of spec
+
+        if param_data.len() < 2 {
             return None;
         }
         
-        let item_count = params[1] as usize;
+        let item_count = param_data[1] as usize;
         let memory = self.memory.read().ok()?;
         
-        let mut response_data = Vec::new();
-        let mut offset = 2;
+        // Param section of response: function(1) + count(1) + per-item result(4 bytes each)
+        // Data section of response: per-item actual bytes
+        let mut param_results = Vec::new();  // goes into param section
+        let mut data_results: Vec<u8> = Vec::new();    // goes into data section
         let mut read_items = Vec::new();
         
+        let mut offset = 2;  // After function code + item count
+        
         for _ in 0..item_count {
-            if offset + 2 > params.len() { break; }
+            if offset + 2 > param_data.len() { break; }
             
-            let var_spec = params[offset];
-            let var_len = params[offset + 1] as usize;
+            let spec_type = param_data[offset];
+            let spec_len = param_data[offset + 1] as usize;
             
-            if var_spec != 0x12 || var_len < 10 || offset + 2 + var_len > params.len() {
+            // Need at least 2 (header) + spec_len bytes
+            if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
+                // Push error result
+                param_results.push(0x0A);
+                param_results.push(0x00);
+                param_results.push(0x00);
+                param_results.push(0x00);
                 continue;
             }
             
-            let _transport = params[offset + 3];
-            let length = ((params[offset + 5] as u16) << 8) | (params[offset + 6] as u16);
-            let db_num = ((params[offset + 7] as u16) << 8) | (params[offset + 8] as u16);
-            let area_code = params[offset + 9];
-            let start = ((params[offset + 10] as u16) << 8) | (params[offset + 11] as u16);
+            let transport = param_data[offset + 2];
+            let num_elements = ((param_data[offset + 4] as u16) << 8) | (param_data[offset + 5] as u16);
+            let db_num = ((param_data[offset + 6] as u16) << 8) | (param_data[offset + 7] as u16);
+            let area_code = param_data[offset + 8];
+            let start = ((param_data[offset + 9] as u16) << 8) | (param_data[offset + 10] as u16);
+            // For 3-byte offset: start = (hi << 16) | (mid << 8) | lo
+            // But for S7-300, 2 bytes is enough
             
             let area = MemoryArea::from_byte(area_code);
             
-            if let Some(area) = area {
-                match memory.read(area, db_num, start as usize, length as usize) {
+            let result = if let Some(area) = area {
+                match memory.read(area, db_num, start as usize, num_elements as usize) {
                     Some(data) => {
-                        response_data.push(0xFF);
-                        response_data.push(TransportSize::Byte as u8);
-                        response_data.push((length >> 8) as u8);
-                        response_data.push((length & 0xFF) as u8);
-                        response_data.extend(data.clone());
+                        param_results.push(0xFF);                          // Success
+                        param_results.push(TransportSize::Byte as u8);     // Transport size
+                        param_results.push((data.len() >> 8) as u8);       // Data length high
+                        param_results.push((data.len() & 0xFF) as u8);     // Data length low
+                        data_results.extend(&data);
+                        
                         let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
                         read_items.push(format!("{:?}[{}] offset={} len={} data=[{}]",
-                            area, db_num, start, length, hex_str));
+                            area, db_num, start, num_elements, hex_str));
+                        true
                     }
                     None => {
-                        response_data.push(0x0A);
-                        response_data.push(0x00);
-                        response_data.push(0x00);
+                        param_results.push(0x0A);  // Error: data not available
+                        param_results.push(0x00);
+                        param_results.push(0x00);
+                        param_results.push(0x00);
                         read_items.push(format!("{:?}[{}] offset={} len={} FAIL",
-                            area, db_num, start, length));
+                            area, db_num, start, num_elements));
+                        false
                     }
                 }
             } else {
-                response_data.push(0x0A);
-                response_data.push(0x00);
-                response_data.push(0x00);
-            }
+                param_results.push(0x0A);  // Error: unknown area
+                param_results.push(0x00);
+                param_results.push(0x00);
+                param_results.push(0x00);
+                false
+            };
             
-            offset += 2 + var_len;
+            let _ = (transport, result);
+            offset += 2 + spec_len;
         }
+        
+        let param_len = 2 + param_results.len();  // function + count + results
+        let data_len = data_results.len();
         
         let mut response = vec![
             PROTOCOL_ID, PduType::AckData as u8, 0x00, 0x00,
             (pdu_ref >> 8) as u8, (pdu_ref & 0xFF) as u8,
-            0x00, (item_count as u16 + 2) as u8, // Param len
-            (response_data.len() >> 8) as u8, (response_data.len() & 0xFF) as u8, // Data len
+            (param_len >> 8) as u8, (param_len & 0xFF) as u8,
+            (data_len >> 8) as u8, (data_len & 0xFF) as u8,
             FunctionCode::Read as u8, item_count as u8,
         ];
-        response.extend(response_data);
+        response.extend(param_results);
+        response.extend(data_results);
         
         if !read_items.is_empty() {
             info!("[READ] items={} {}", read_items.len(), read_items.join(" | "));
@@ -263,60 +440,55 @@ impl PlcSimulator {
     }
     
     /// Handle write request
-    async fn handle_write_request(&self, pdu_ref: u16, params: &[u8]) -> Option<Vec<u8>> {
-        if params.len() < 2 {
+    /// param_data: full S7 params = [function_code, item_count, item_spec...]
+    async fn handle_write_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
+        if param_data.len() < 2 {
             return None;
         }
         
-        let item_count = params[1] as usize;
+        let item_count = param_data[1] as usize;
         let mut memory = self.memory.write().ok()?;
         
-        let mut offset = 2;
-        for _ in 0..item_count {
-            if offset + 2 > params.len() { break; }
-            let var_len = params[offset + 1] as usize;
-            offset += 2 + var_len;
-        }
-        
+        let mut offset = 2;  // After function code + item count
         let mut success_count = 0;
-        offset = 2;
         let mut write_items = Vec::new();
         
         for _ in 0..item_count {
-            if offset + 2 > params.len() { break; }
+            if offset + 2 > param_data.len() { break; }
             
-            let var_spec = params[offset];
-            let var_len = params[offset + 1] as usize;
+            let spec_type = param_data[offset];
+            let spec_len = param_data[offset + 1] as usize;
             
-            if var_spec != 0x12 || var_len < 10 || offset + 2 + var_len > params.len() {
+            if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
                 continue;
             }
             
-            let length = ((params[offset + 5] as u16) << 8) | (params[offset + 6] as u16);
-            let db_num = ((params[offset + 7] as u16) << 8) | (params[offset + 8] as u16);
-            let area_code = params[offset + 9];
-            let start = ((params[offset + 10] as u16) << 8) | (params[offset + 11] as u16);
+            let num_elements = ((param_data[offset + 4] as u16) << 8) | (param_data[offset + 5] as u16);
+            let db_num = ((param_data[offset + 6] as u16) << 8) | (param_data[offset + 7] as u16);
+            let area_code = param_data[offset + 8];
+            let start = ((param_data[offset + 9] as u16) << 8) | (param_data[offset + 10] as u16);
             
             let area = MemoryArea::from_byte(area_code);
             
             if let Some(area) = area {
-                let param_end = offset + 2 + var_len;
-                if param_end + length as usize <= params.len() {
-                    let data = &params[param_end..param_end + length as usize];
+                let data_start = offset + 2 + spec_len;
+                let data_end = data_start + num_elements as usize;
+                if data_end <= param_data.len() {
+                    let data = &param_data[data_start..data_end];
                     if memory.write(area, db_num, start as usize, data) {
                         success_count += 1;
                         let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
                         write_items.push(format!("{:?}[{}] offset={} len={} data=[{}] OK",
-                            area, db_num, start, length, hex_str));
+                            area, db_num, start, num_elements, hex_str));
                     } else {
                         write_items.push(format!("{:?}[{}] offset={} len={} FAIL",
-                            area, db_num, start, length));
+                            area, db_num, start, num_elements));
                     }
                 }
             }
             
-            offset += 2 + var_len;
+            offset += 2 + spec_len;
         }
         
         let response = vec![

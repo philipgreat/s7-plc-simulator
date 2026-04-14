@@ -134,6 +134,84 @@ impl PlcMemory {
             db20.bytes[4 + i] = b;
         });
         self.data_blocks.insert(20, db20);
+        
+        // DB100 - Filling Station Status (灌装站状态)
+        // Structure based on FillStationStatus from Java commonDataBlockCodec
+        // offset 0-3:   status (DWORD) - 0=IDLE, 1=RUNNING, 2=PAUSED, 3=COMPLETED, 4=ERROR
+        // offset 4-7:   taskId (DWORD) - 当前任务ID
+        // offset 8-11:  progress (REAL) - 进度 0.0-100.0
+        // offset 12-15: volumeDispensed (REAL) - 已灌装量 (L)
+        // offset 16-19: targetVolume (REAL) - 目标灌装量 (L)
+        // offset 20-23: flowRate (REAL) - 瞬时流量 (L/min)
+        // offset 24-27: pressure (REAL) - 压力 (bar)
+        // offset 28-31: temperature (REAL) - 温度 (℃)
+        // offset 32-35: fillStationId (DWORD) - 工位ID
+        // offset 36-39: startTime (DWORD) - 开始时间戳 (Unix seconds)
+        // offset 40-43: endTime (DWORD) - 结束时间戳 (Unix seconds)
+        // offset 44:    errorCode (BYTE) - 错误码 0=无错误
+        // offset 45-108: reserved (64 bytes)
+        let mut db100 = DataBlockData::new(100, 256);
+        
+        // status: RUNNING (1)
+        db100.bytes[0] = 0x00;
+        db100.bytes[1] = 0x00;
+        db100.bytes[2] = 0x00;
+        db100.bytes[3] = 0x01;
+        
+        // taskId: 12345
+        db100.bytes[4] = 0x00;
+        db100.bytes[5] = 0x00;
+        db100.bytes[6] = 0x30;
+        db100.bytes[7] = 0x39;
+        
+        // progress: 65.5%
+        let progress: f32 = 65.5;
+        db100.bytes[8..12].copy_from_slice(&progress.to_be_bytes());
+        
+        // volumeDispensed: 327.5 L
+        let volume: f32 = 327.5;
+        db100.bytes[12..16].copy_from_slice(&volume.to_be_bytes());
+        
+        // targetVolume: 500.0 L
+        let target: f32 = 500.0;
+        db100.bytes[16..20].copy_from_slice(&target.to_be_bytes());
+        
+        // flowRate: 45.2 L/min
+        let flow: f32 = 45.2;
+        db100.bytes[20..24].copy_from_slice(&flow.to_be_bytes());
+        
+        // pressure: 2.8 bar
+        let pressure: f32 = 2.8;
+        db100.bytes[24..28].copy_from_slice(&pressure.to_be_bytes());
+        
+        // temperature: 22.5 ℃
+        let temp: f32 = 22.5;
+        db100.bytes[28..32].copy_from_slice(&temp.to_be_bytes());
+        
+        // fillStationId: 1
+        db100.bytes[32] = 0x00;
+        db100.bytes[33] = 0x00;
+        db100.bytes[34] = 0x00;
+        db100.bytes[35] = 0x01;
+        
+        // startTime: now - 120 seconds
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let start = (now - 120).to_be_bytes();
+        db100.bytes[36..40].copy_from_slice(&start);
+        
+        // endTime: 0 (not ended)
+        db100.bytes[40] = 0x00;
+        db100.bytes[41] = 0x00;
+        db100.bytes[42] = 0x00;
+        db100.bytes[43] = 0x00;
+        
+        // errorCode: 0 (no error)
+        db100.bytes[44] = 0x00;
+        
+        self.data_blocks.insert(100, db100);
     }
     
     /// Add a new data block
