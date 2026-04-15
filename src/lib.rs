@@ -63,163 +63,320 @@ impl PlcSimulator {
     }
     
     /// Handle incoming connection
+    /// Read exactly `n` bytes from the stream into buffer.
+    /// Returns Ok(Some(bytes)) on success, Ok(None) on EOF.
+    async fn read_exact_buf(
+        stream: &mut tokio::net::TcpStream,
+        buf: &mut Vec<u8>,
+        buf_start: &mut usize,
+        buf_end: &mut usize,
+        n: usize,
+    ) -> Result<bool, std::io::Error> {
+        // buf is pre-allocated and always zeroed; ensure capacity for n bytes
+        if buf.len() < n {
+            buf.resize(n, 0);
+        }
+        // Keep reading until we have n bytes from buf_start
+        while *buf_end - *buf_start < n {
+            // Need more data
+            let available = *buf_end - *buf_start;
+            // Compact if there's consumed data
+            if *buf_start > 0 && available > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        buf.as_ptr().add(*buf_start),
+                        buf.as_mut_ptr(),
+                        available,
+                    );
+                }
+                *buf_start = 0;
+                *buf_end = available;
+            } else if *buf_start > 0 {
+                // No remaining data, just reset
+                *buf_start = 0;
+                *buf_end = 0;
+            }
+            // Grow buffer if at capacity (buf.len() bytes initialized, buf_end is within that)
+            if *buf_end >= buf.len() {
+                buf.resize(buf.len() * 2, 0);
+            }
+            // Read into uninitialized space at buf_end
+            let read = stream.read(&mut buf[*buf_end..]).await?;
+            if read == 0 {
+                return Ok(false);
+            }
+            *buf_end += read;
+        }
+        Ok(true)
+    }
+
+    /// Consume exactly `n` bytes from the front of the consumed region.
+    /// Returns the consumed slice and advances buf_start.
+    fn consume_buf<'a>(buf: &'a [u8], buf_start: &mut usize, buf_end: &mut usize, n: usize) -> Option<&'a [u8]> {
+        if *buf_start + n > *buf_end {
+            return None;
+        }
+        let consumed = &buf[*buf_start..*buf_start + n];
+        *buf_start += n;
+        Some(consumed)
+    }
+
+    /// Send raw bytes through the stream, optionally wrapping in TPKT.
+    async fn send_packet(
+        stream: &mut tokio::net::TcpStream,
+        payload: &[u8],
+        use_tpkt: bool,
+    ) -> Result<(), std::io::Error> {
+        if use_tpkt {
+            let total_len = payload.len() + 4;
+            let tpkt: [u8; 4] = [
+                0x03, 0x00,
+                (total_len >> 8) as u8,
+                (total_len & 0xFF) as u8,
+            ];
+            stream.write_all(&tpkt).await?;
+        }
+        stream.write_all(payload).await?;
+        stream.flush().await?;
+        Ok(())
+    }
+
     pub async fn handle_connection(&self, mut stream: tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = stream.peer_addr()?;
         info!("[S7] +++ CONNECT from {}", addr);
         
-        // Buffered reader to handle multiple TPKT packets in one TCP stream
-        use tokio::io::ReadBuf;
+        // Disable Nagle to ensure immediate response
+        let _ = stream.set_nodelay(true);
+        
+        // Pre-allocated zeroed buffer; always read at buf[buf_end] and compact when needed
         let mut buf = vec![0u8; 8192];
-        let mut buf_start = 0;
-        let mut buf_end = 0;
+        let mut buf_start: usize = 0;
+        let mut buf_end: usize = 0;
         
-        // Read TPKT header (4 bytes): version, reserved, length(2 bytes big-endian)
-        loop {
-            if buf_start + 4 > buf_end {
-                // Need more data
-                let remaining = buf_end - buf_start;
-                buf.copy_within(buf_start..buf_end, 0);
-                buf_start = 0;
-                buf_end = remaining;
-                let n = stream.read(&mut buf[buf_end..]).await?;
-                if n == 0 {
-                    info!("[S7] --- CLOSE (EOF) from {}", addr);
-                    return Ok(());
-                }
-                buf_end += n;
-                continue;
-            }
-            break;
-        }
-        
-        // Accept TPKT v3 (0x03)
-        if buf[buf_start] != 0x03 {
-            warn!("[S7] Unknown TPKT version: {:#x}, closing connection", buf[buf_start]);
+        // --- Read first byte to detect framing ---
+        // Read at least 1 byte to decide: TPKT (0x03) vs raw COTP (0x11, 0x0D, 0x02, 0xF0, etc.)
+        if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 1).await? {
+            info!("[S7] --- CLOSE (EOF) from {}", addr);
             return Ok(());
         }
         
-        // TPKT length includes all bytes (header + payload)
-        let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
-        let payload_len = tpkt_len - 4;  // Subtract TPKT header
-        buf_start += 4;
+        // Detect framing: TPKT vs raw COTP
+        let use_tpkt = buf[buf_start] == 0x03;
+        debug!("[S7] Framing detected: {}", if use_tpkt { "TPKT (RFC 1006)" } else { "Raw COTP" });
         
-        // Read COTP payload
-        loop {
-            if buf_start + payload_len > buf_end {
-                let remaining = buf_end - buf_start;
-                buf.copy_within(buf_start..buf_end, 0);
-                buf_start = 0;
-                buf_end = remaining;
-                let n = stream.read(&mut buf[buf_end..]).await?;
-                if n == 0 {
-                    info!("[S7] --- CLOSE (EOF) from {}", addr);
-                    return Ok(());
-                }
-                buf_end += n;
-                continue;
+        // For TPKT, read 3 more bytes for full header (already have 1)
+        if use_tpkt {
+            // buf[buf_start] = 0x03 already read; need bytes buf_start+1, buf_start+2, buf_start+3
+            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 4).await? {
+                return Ok(());
             }
-            break;
+            let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
+            buf_start += 4;
+            
+            // Read full COTP CR payload
+            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, tpkt_len - 4).await? {
+                return Ok(());
+            }
+            let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, tpkt_len - 4);
+        } else {
+            // Raw COTP: byte 0 = PDU type, byte 1 = LI (Length Indicator, total COTP length including type+LI)
+            // COTP CR: 11 E0 ... → LI=0x11=17, type=0xE0
+            // COTP DT: 02 F0 ... → LI=0x07=7, type=0x02
+            // Read at least 2 bytes to get both type and LI
+            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 2).await? {
+                return Ok(());
+            }
+            let li = buf[buf_start + 1] as usize;
+            // Read remaining COTP CR bytes
+            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, li.saturating_sub(2)).await? {
+                return Ok(());
+            }
+            let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, li);
         }
         
-        let cotp_payload = &buf[buf_start..buf_start + payload_len];
-        buf_start += payload_len;
-        debug!("[S7] COTP CR: {} bytes", payload_len);
-        
-        // Send COTP CC wrapped in TPKT
-        // COTP CC structure: 1-byte code + 1-byte length + 2-byte dst-ref + 2-byte src-ref + 1-byte class + optional params
-        // Optional params: TPDU-size(3) + calling-TSAP(4) + called-TSAP(4) = 11 bytes
-        // Total: 7 + 11 = 18 bytes COTP payload → COTP length field = 18
-        let cotp_cc = vec![
-            0x0D,                   // CC code
-            0x00, 0x12,             // Length: 18 (COTP payload after this byte)
-            0x00, 0x00,             // Dest ref
+        // --- Build COTP CC response (match client framing) ---
+        // COTP CC: 0x0D | LI(2) | dst-ref(2) | src-ref(2) | class(1) | TPDU-size(3) | calling-TSAP(4) | called-TSAP(4)
+        // Total payload: 1+2+2+2+1+3+4+4 = 19 bytes → LI field = 0x13 (19)
+        let cotp_cc: [u8; 19] = [
+            0x0D,                   // CC type
+            0x00, 0x13,             // LI = 19 (includes LI itself + 18 more bytes)
+            0x00, 0x00,             // Dest ref (echo client's dst ref)
             0x00, 0x01,             // Src ref
             0x00,                   // Class
             0xC0, 0x01, 0x0A,      // TPDU size: 1024
-            0xC1, 0x02, 0x00, 0x01, // Calling TSAP
-            0xC2, 0x02, 0x00, 0x00, // Called TSAP
+            0xC1, 0x02, 0x00, 0x01, // Calling TSAP (echo)
+            0xC2, 0x02, 0x00, 0x00, // Called TSAP (echo)
         ];
-        let tpkt_cc_len = cotp_cc.len() + 4;  // 22 + 4 = 26
-        let tpkt_cc = vec![
-            0x03, 0x00,
-            (tpkt_cc_len >> 8) as u8, (tpkt_cc_len & 0xFF) as u8,
-        ];
-        stream.write_all(&tpkt_cc).await?;
-        stream.write_all(&cotp_cc).await?;
-        stream.flush().await?;
-        debug!("[S7] Sent COTP CC (TPKT len={})", tpkt_cc_len);
         
-        // Send COTP DT (activate) as separate TCP packet
-        // COTP DT: 1-byte DT code + 3 bytes TPDU + 3 bytes padding = 7 bytes COTP payload
+        // Send CC
+        Self::send_packet(&mut stream, &cotp_cc, use_tpkt).await?;
+        debug!("[S7] Sent COTP CC (TPKT={})", use_tpkt);
+        
+        // Send COTP DT (connection active) - same framing as CC
         let cotp_dt: [u8; 7] = [0x02, 0xF0, 0x80, 0x00, 0x00, 0x00, 0x00];
-        let tpkt_dt_len = cotp_dt.len() + 4;  // 7 + 4 = 11
-        let tpkt_dt: [u8; 4] = [
-            0x03, 0x00,
-            (tpkt_dt_len >> 8) as u8, (tpkt_dt_len & 0xFF) as u8,
-        ];
-        stream.write_all(&tpkt_dt).await?;
-        stream.write_all(&cotp_dt).await?;
-        stream.flush().await?;
-        debug!("[S7] Sent COTP DT (TPKT len={})", tpkt_dt_len);
+        Self::send_packet(&mut stream, &cotp_dt, use_tpkt).await?;
+        debug!("[S7] Sent COTP DT (TPKT={})", use_tpkt);
         
-        // Main request loop - read TPKT header first, then S7 packet
+        // --- Main request loop ---
         loop {
-            // Read TPKT header (4 bytes)
-            loop {
-                if buf_start + 4 > buf_end {
-                    let remaining = buf_end - buf_start;
-                    buf.copy_within(buf_start..buf_end, 0);
-                    buf_start = 0;
-                    buf_end = remaining;
-                    let n = stream.read(&mut buf[buf_end..]).await?;
-                    if n == 0 {
-                        info!("[S7] --- CLOSE (EOF) from {}", addr);
-                        return Ok(());
-                    }
-                    buf_end += n;
-                    continue;
+            if use_tpkt {
+                // TPKT mode: always read TPKT header first
+                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 4).await? {
+                    info!("[S7] --- CLOSE (EOF) from {}", addr);
+                    return Ok(());
                 }
-                break;
-            }
-            
-            // Accept TPKT v3 (0x03)
-            if buf[buf_start] != 0x03 {
-                warn!("[S7] Unknown TPKT: {:#x}, closing", buf[buf_start]);
-                return Ok(());
-            }
-            
-            let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
-            let payload_len = tpkt_len - 4;  // Subtract TPKT header
-            buf_start += 4;
-            
-            // Read TPKT payload
-            loop {
-                if buf_start + payload_len > buf_end {
-                    let remaining = buf_end - buf_start;
-                    buf.copy_within(buf_start..buf_end, 0);
-                    buf_start = 0;
-                    buf_end = remaining;
-                    let n = stream.read(&mut buf[buf_end..]).await?;
-                    if n == 0 {
-                        info!("[S7] --- CLOSE (EOF) from {}", addr);
-                        return Ok(());
-                    }
-                    buf_end += n;
-                    continue;
+                if buf[buf_start] != 0x03 {
+                    warn!("[S7] Expected TPKT 0x03, got {:#x}, closing", buf[buf_start]);
+                    return Ok(());
                 }
-                break;
+                let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
+                buf_start += 4;
+                
+                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, tpkt_len - 4).await? {
+                    return Ok(());
+                }
+                let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, tpkt_len - 4)
+                    .unwrap_or(&[][..]);
+                self.process_payload(&payload, &addr, &mut stream, use_tpkt).await?;
+            } else {
+                // Raw mode: peek first byte to detect frame type
+                let avail = buf_end - buf_start;
+                if avail > 0 {
+                    info!("[S7] Raw mode, {} leftover bytes, first={:#x}", avail, buf[buf_start]);
+                }
+                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 1).await? {
+                    info!("[S7] --- CLOSE (EOF) from {}", addr);
+                    return Ok(());
+                }
+                let first = buf[buf_start];
+                info!("[S7] Raw first byte: {:#x} (buf_start={}, buf_end={})", first, buf_start, buf_end);
+                
+                if first == PROTOCOL_ID {
+                    // S7 packet: process from buffer without blocking
+                    // S7 PDU: bytes 0-9 header, param_len at bytes 5-6, data_len at bytes 7-8
+                    let avail = buf_end - buf_start;
+                    if avail < 10 {
+                        if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 10 - avail).await? {
+                            return Ok(());
+                        }
+                    }
+                    // S7 header: [0:proto][1:type][2-3:rsv][4-5:ref][6-7:param_len][8-9:data_len]
+                    let param_len = ((buf[buf_start + 6] as usize) << 8) | (buf[buf_start + 7] as usize);
+                    let data_len  = ((buf[buf_start + 8] as usize) << 8) | (buf[buf_start + 9] as usize);
+                    let s7_total = 10 + param_len + data_len;
+                    
+                    if buf_end - buf_start < s7_total {
+                        let need = s7_total - (buf_end - buf_start);
+                        if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, need).await? {
+                            return Ok(());
+                        }
+                    }
+                    let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
+                        .unwrap_or(&[][..]);
+                    info!("[S7] S7 packet processed ({} bytes, param={}, data={})", s7_total, param_len, data_len);
+                    self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                } else {
+                    // COTP: check PDU type to determine length
+                    if first == 0x02 {
+                        // COTP DT: fixed 7 bytes: [type=02 | TPDU=0xF0 | EOT | dst-ref(2) | src-ref(2)]
+                        // No LI field; always exactly 7 bytes
+                        if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 6).await? {
+                            return Ok(());
+                        }
+                        let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, 7);
+                        debug!("[S7] COTP DT consumed (7 bytes)");
+                        
+                        // COTP DT may be followed by S7 data in same TCP segment
+                        // Check if there's an S7 packet already in buffer
+                        let avail = buf_end - buf_start;
+                        let dump_len = (buf_end - buf_start).min(40);
+                        info!("[S7] After COTP DT: bs={} be={} avail={} buf[{}..{}]={:02X?}",
+                              buf_start, buf_end, avail, buf_start, buf_start + dump_len, &buf[buf_start..buf_start + dump_len]);
+                        if avail >= 10 && buf[buf_start] == PROTOCOL_ID {
+                            // Peek: read S7 header to get total length
+                            let param_len = ((buf[buf_start + 6] as usize) << 8) | (buf[buf_start + 7] as usize);
+                            let data_len  = ((buf[buf_start + 8] as usize) << 8) | (buf[buf_start + 9] as usize);
+                            let s7_total = 10 + param_len + data_len;
+                            info!("[S7] COTP-DT S7 detect: param_len={} data_len={} s7_total={} avail={}",
+                                  param_len, data_len, s7_total, avail);
+                            if avail >= s7_total {
+                                info!("[S7] COTP-DT S7 processing {} bytes...", s7_total);
+                                let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
+                                    .unwrap_or(&[][..]);
+                                self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                                info!("[S7] COTP-DT S7 done, bs={} be={}", buf_start, buf_end);
+                            } else {
+                                info!("[S7] COTP-DT S7 need more: {} < {}", avail, s7_total);
+                            }
+                        }
+                    } else if first == 0x0D || first == 0xE0 || first == 0x08 || first == 0x07 || first == 0xF0 {
+                        // Known COTP PDU types: CR(0xE0), CC(0x0D), DR(0x80), DC(0xF0), etc.
+                        // COTP: PDU type at buf_start, LI (Length Indicator) at buf_start+1
+                        // The client sends: [type=0xE0 | LI=0x11 | ...] so LI is at buf_start+1
+                        let avail = buf_end - buf_start;
+                        if avail < 2 {
+                            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, 2 - avail).await? {
+                                return Ok(());
+                            }
+                        }
+                        let li = buf[buf_start + 1] as usize;
+                        if li < 2 || li > 255 {
+                            warn!("[S7] Invalid COTP LI={} at buf_start={}, skipping", li, buf_start);
+                            let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, 1);
+                            continue;
+                        }
+                        let cotp_total = li;
+                        // Read remaining COTP bytes
+                        let avail = buf_end - buf_start;
+                        let need = cotp_total.saturating_sub(avail);
+                        if need > 0 {
+                            if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, need).await? {
+                                return Ok(());
+                            }
+                        }
+                        
+                        // Consume COTP PDU and peek what follows
+                        let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, cotp_total);
+                        debug!("[S7] COTP consumed {} bytes (type={:#x})", cotp_total, first);
+                        
+                        // Peek remaining bytes for S7 detection
+                        let avail = buf_end - buf_start;
+                        if avail >= 1 && buf[buf_start] == PROTOCOL_ID {
+                            // S7 packet follows - read full S7 PDU
+                            let need_s7 = 10usize.saturating_sub(avail);
+                            if need_s7 > 0 {
+                                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, need_s7).await? {
+                                    return Ok(());
+                                }
+                            }
+                            let param_len = ((buf[buf_start + 6] as usize) << 8) | (buf[buf_start + 7] as usize);
+                            let data_len  = ((buf[buf_start + 8] as usize) << 8) | (buf[buf_start + 9] as usize);
+                            let s7_total = 10 + param_len + data_len;
+                            
+                            let need_s7_data = s7_total.saturating_sub(buf_end - buf_start);
+                            if need_s7_data > 0 {
+                                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, need_s7_data).await? {
+                                    return Ok(());
+                                }
+                            }
+                            let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
+                                .unwrap_or(&[][..]);
+                            self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                        }
+                    } else {
+                        // Unknown byte - skip it (could be leftover data from previous packet)
+                        warn!("[S7] Unknown byte {:#x} at buf_start={}, skipping", first, buf_start);
+                        let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, 1);
+                    }
+                }
+                continue;
             }
-            
-            let payload = &buf[buf_start..buf_start + payload_len];
-            buf_start += payload_len;
-            
-            // Parse payload (could be COTP DT, S7 packet, or mixed)
-            self.process_payload(&payload, &addr, &mut stream).await?;
         }
     }
+
     
     /// Process a TPKT payload (may contain COTP DT and/or S7 packets)
-    async fn process_payload(&self, payload: &[u8], addr: &std::net::SocketAddr, stream: &mut tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn process_payload(&self, payload: &[u8], addr: &std::net::SocketAddr, stream: &mut tokio::net::TcpStream, use_tpkt: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut offset = 0;
         
         while offset < payload.len() {
@@ -237,6 +394,7 @@ impl PlcSimulator {
                 }
                 
                 let pdu_type = remaining[1];
+                // S7 PDU header: [0:proto][1:type][2-3:reserved][4-5:ref][6-7:param_len][8-9:data_len]
                 let pdu_ref = ((remaining[4] as u16) << 8) | (remaining[5] as u16);
                 let param_len = ((remaining[6] as u16) << 8) | (remaining[7] as u16);
                 let data_len = ((remaining[8] as u16) << 8) | (remaining[9] as u16);
@@ -254,21 +412,24 @@ impl PlcSimulator {
                 
                 // Send TPKT-wrapped response
                 if let Some(resp) = response {
-                    let tpkt_resp: Vec<u8> = vec![
-                        0x03, 0x00,
-                        ((resp.len() + 4) >> 8) as u8, ((resp.len() + 4) & 0xFF) as u8,
-                    ];
-                    stream.write_all(&tpkt_resp).await?;
+                    if use_tpkt {
+                        let tpkt_resp: Vec<u8> = vec![
+                            0x03, 0x00,
+                            ((resp.len() + 4) >> 8) as u8, ((resp.len() + 4) & 0xFF) as u8,
+                        ];
+                        stream.write_all(&tpkt_resp).await?;
+                    }
                     stream.write_all(&resp).await?;
                     stream.flush().await?;
-                    debug!("[S7] Sent response: {} bytes", resp.len());
+                    debug!("[S7] Sent response: {} bytes (TPKT={})", resp.len(), use_tpkt);
                 }
             } else {
                 // COTP packet (DT or other)
-                // COTP DT: 0x02 0xF0 0x80 ...
-                offset += 1; // Skip COTP byte
-                // Just consume and ignore COTP for now
-                debug!("[S7] Ignoring COTP byte");
+                // Raw COTP: [type(1) | LI(1) | rest(LI-2 bytes)]
+                // COTP DT: 02 06 F0 80 00 00 00 → type=02, LI=06 (6 total bytes)
+                let cotp_total = remaining.len().min(if remaining.len() >= 2 { remaining[1] as usize } else { 1 });
+                debug!("[S7] Skipping COTP PDU: {} bytes", cotp_total);
+                offset += cotp_total;
             }
         }
         
