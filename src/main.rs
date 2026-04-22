@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use tracing_subscriber::prelude::*;
-use s7_plc_simulator::{create_shared_memory, PlcSimulator, api};
+use s7_plc_simulator::{create_shared_memory, create_connection_list, PlcSimulator, api};
 
 #[derive(Parser)]
 #[command(name = "s7-plc-simulator")]
@@ -67,6 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create shared memory
     let memory = create_shared_memory();
     
+    // Create shared connection list
+    let connections = create_connection_list();
+    
     // Print memory info
     {
         let mem = memory.read().unwrap();
@@ -86,33 +89,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     // Spawn S7 server
     let memory_clone = memory.clone();
+    let connections_clone = connections.clone();
     let plc_type = cli.plc_type.clone();
     let s7_port = cli.s7_port;
     let rack = cli.rack;
     let slot = cli.slot;
     
     let s7_handle = tokio::spawn(async move {
-        PlcSimulator::start_s7_server(s7_port, memory_clone, &plc_type, rack, slot).await
+        PlcSimulator::start_s7_server(s7_port, memory_clone, &plc_type, rack, slot, connections_clone).await
     });
     
-    // Start Web API server
+    // Spawn Web API server
     let web_handle = tokio::spawn(async move {
-        api::start_server(cli.web_port, memory, cli.s7_port).await
+        api::start_server(cli.web_port, memory, cli.s7_port, connections).await
     });
     
-    // Wait for either to finish
-    tokio::select! {
-        result = s7_handle => {
-            if let Err(e) = result {
-                eprintln!("S7 server error: {}", e);
-            }
-        }
-        result = web_handle => {
-            if let Err(e) = result {
-                eprintln!("Web server error: {}", e);
-            }
-        }
-    }
+    // Wait for Ctrl+C, then shutdown gracefully
+    tokio::signal::ctrl_c().await?;
+    eprintln!("\nShutting down...");
     
+    // Abort both server tasks (they're infinite loops, must force-kill)
+    s7_handle.abort();
+    web_handle.abort();
+    
+    // Give them a moment to clean up
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+        let _ = s7_handle.await;
+        let _ = web_handle.await;
+    }).await;
+    
+    eprintln!("S7 PLC Simulator stopped.");
     Ok(())
 }

@@ -212,6 +212,119 @@ impl PlcMemory {
         db100.bytes[44] = 0x00;
         
         self.data_blocks.insert(100, db100);
+
+        // DB401 - Filling Station Status (灌装站运行状态)
+        // Size: 38 bytes (matches FillStation.status_db_size)
+        // offset 0-3:   stationStatus (DWORD) - 0=IDLE, 1=RUNNING, 2=PAUSED, 3=COMPLETED, 4=ERROR
+        // offset 4-7:   currentTaskId (DWORD) - 当前任务ID
+        // offset 8-11:  fillProgress (REAL) - 灌装进度 0.0-100.0
+        // offset 12-15: currentVolume (REAL) - 当前已灌装量 (L)
+        // offset 16-19: targetVolume (REAL) - 目标灌装量 (L)
+        // offset 20-23: flowRate (REAL) - 瞬时流量 (L/min)
+        // offset 24-27: pressure (REAL) - 压力 (bar)
+        // offset 28-31: temperature (REAL) - 温度 (℃)
+        // offset 32-35: elapsedSeconds (DWORD) - 已运行秒数
+        // offset 36:    errorCode (BYTE) - 错误码 0=无错误
+        // offset 37:    reserved (BYTE)
+        let mut db401 = DataBlockData::new(401, 38);
+
+        // stationStatus: RUNNING (1)
+        db401.bytes[0] = 0x00;
+        db401.bytes[1] = 0x00;
+        db401.bytes[2] = 0x00;
+        db401.bytes[3] = 0x01;
+
+        // currentTaskId: 67890
+        db401.bytes[4] = 0x00;
+        db401.bytes[5] = 0x01;
+        db401.bytes[6] = 0x09;
+        db401.bytes[7] = 0x32;
+
+        // fillProgress: 72.5%
+        let fill_progress: f32 = 72.5;
+        db401.bytes[8..12].copy_from_slice(&fill_progress.to_be_bytes());
+
+        // currentVolume: 362.5 L
+        let current_vol: f32 = 362.5;
+        db401.bytes[12..16].copy_from_slice(&current_vol.to_be_bytes());
+
+        // targetVolume: 500.0 L
+        let target_vol: f32 = 500.0;
+        db401.bytes[16..20].copy_from_slice(&target_vol.to_be_bytes());
+
+        // flowRate: 42.8 L/min
+        let flow_rate: f32 = 42.8;
+        db401.bytes[20..24].copy_from_slice(&flow_rate.to_be_bytes());
+
+        // pressure: 3.1 bar
+        let press: f32 = 3.1;
+        db401.bytes[24..28].copy_from_slice(&press.to_be_bytes());
+
+        // temperature: 23.4 ℃
+        let temp401: f32 = 23.4;
+        db401.bytes[28..32].copy_from_slice(&temp401.to_be_bytes());
+
+        // elapsedSeconds: 300 (5 minutes)
+        db401.bytes[32] = 0x00;
+        db401.bytes[33] = 0x00;
+        db401.bytes[34] = 0x01;
+        db401.bytes[35] = 0x2C;
+
+        // errorCode: 0 (no error)
+        db401.bytes[36] = 0x00;
+        db401.bytes[37] = 0x00;
+
+        self.data_blocks.insert(401, db401);
+
+        // DB2991 - Filling Station Report (灌装站报告数据)
+        // Size: 808 bytes (matches FillStation.report_db_size)
+        // offset 0-3:     reportCount (DWORD) - 报告数量
+        // offset 4-7:     reportIndex (DWORD) - 当前报告索引
+        // offset 8-471:   reportData[50] - 50条报告记录, 每条 9.2 bytes (动态)
+        // offset 472-479: startTime (S7 DateAndTime, BCD编码)
+        // offset 480-487: endTime (S7 DateAndTime, BCD编码)
+        // offset 780-787: taskId (8 bytes)
+        // offset 788-807: reserved
+        let mut db2991 = DataBlockData::new(2991, 808);
+
+        // reportCount: 1
+        db2991.bytes[0] = 0x00;
+        db2991.bytes[1] = 0x00;
+        db2991.bytes[2] = 0x00;
+        db2991.bytes[3] = 0x01;
+
+        // reportIndex: 0
+        db2991.bytes[4] = 0x00;
+        db2991.bytes[5] = 0x00;
+        db2991.bytes[6] = 0x00;
+        db2991.bytes[7] = 0x00;
+
+        // taskId at offset 780: "TASK0001" as ASCII
+        let task_id = b"TASK0001";
+        db2991.bytes[780..788].copy_from_slice(task_id);
+
+        // startTime at offset 472: S7 DateAndTime BCD format
+        // 2026-04-19 18:00:00 → BCD: year=0x26, month=0x04, day=0x19, hour=0x18, min=0x00, sec=0x00, dow=0x07, msec_hi=0x00
+        db2991.bytes[472] = 0x26; // year (BCD)
+        db2991.bytes[473] = 0x04; // month (BCD)
+        db2991.bytes[474] = 0x19; // day (BCD)
+        db2991.bytes[475] = 0x18; // hour (BCD)
+        db2991.bytes[476] = 0x00; // minute (BCD)
+        db2991.bytes[477] = 0x00; // second (BCD)
+        db2991.bytes[478] = 0x07; // day of week (BCD, 1=Sunday..7=Saturday)
+        db2991.bytes[479] = 0x00; // msec high nibble
+
+        // endTime at offset 480: 2026-04-19 18:05:00
+        db2991.bytes[480] = 0x26;
+        db2991.bytes[481] = 0x04;
+        db2991.bytes[482] = 0x19;
+        db2991.bytes[483] = 0x18;
+        db2991.bytes[484] = 0x05;
+        db2991.bytes[485] = 0x00;
+        db2991.bytes[486] = 0x07;
+        db2991.bytes[487] = 0x00;
+
+        self.data_blocks.insert(2991, db2991);
     }
     
     /// Add a new data block

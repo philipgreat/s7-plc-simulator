@@ -13,6 +13,28 @@ use tracing::{debug, error, info, warn};
 
 pub use memory::{PlcMemory, SharedMemory, create_shared_memory, MemoryArea};
 
+/// Shared connection tracker
+pub type ConnectionList = Arc<RwLock<Vec<ClientConnection>>>;
+
+/// Information about a connected client
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClientConnection {
+    pub id: usize,
+    pub remote_addr: String,
+    pub connected_at: String,
+    pub last_activity: String,
+    pub requests_count: u64,
+    pub framing: String,
+    pub state: String,
+}
+
+/// Create a new shared connection list
+pub fn create_connection_list() -> ConnectionList {
+    Arc::new(RwLock::new(Vec::new()))
+}
+
+static CONNECTION_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
 /// Protocol ID
 const PROTOCOL_ID: u8 = 0x32;
 
@@ -49,16 +71,19 @@ pub struct PlcSimulator {
     /// Rack and slot
     rack: u8,
     slot: u8,
+    /// Active connections tracker
+    connections: ConnectionList,
 }
 
 impl PlcSimulator {
     /// Create new PLC simulator
-    pub fn new(plc_type: &str, rack: u8, slot: u8, memory: SharedMemory) -> Self {
+    pub fn new(plc_type: &str, rack: u8, slot: u8, memory: SharedMemory, connections: ConnectionList) -> Self {
         Self {
             memory,
             plc_type: plc_type.to_string(),
             rack,
             slot,
+            connections,
         }
     }
     
@@ -76,19 +101,21 @@ impl PlcSimulator {
         if buf.len() < n {
             buf.resize(n, 0);
         }
+        // Safety: ensure buf_start <= buf_end (invariant check)
+        if *buf_start > *buf_end {
+            warn!("[S7] BUG: buf_start={} > buf_end={}, resetting", *buf_start, *buf_end);
+            *buf_start = 0;
+            *buf_end = 0;
+        }
         // Keep reading until we have n bytes from buf_start
         while *buf_end - *buf_start < n {
             // Need more data
             let available = *buf_end - *buf_start;
             // Compact if there's consumed data
             if *buf_start > 0 && available > 0 {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        buf.as_ptr().add(*buf_start),
-                        buf.as_mut_ptr(),
-                        available,
-                    );
-                }
+                // Use safe copy instead of unsafe ptr::copy_nonoverlapping
+                let data = buf[*buf_start..*buf_end].to_vec();
+                buf[..available].copy_from_slice(&data);
                 *buf_start = 0;
                 *buf_end = available;
             } else if *buf_start > 0 {
@@ -105,6 +132,7 @@ impl PlcSimulator {
             if read == 0 {
                 return Ok(false);
             }
+            info!("[S7] <<< RECV {} bytes, head=[{}]", read, Self::hex_head(&buf[*buf_end..*buf_end + read], 10));
             *buf_end += read;
         }
         Ok(true)
@@ -121,12 +149,18 @@ impl PlcSimulator {
         Some(consumed)
     }
 
+    /// Format first N bytes as hex string for logging
+    fn hex_head(data: &[u8], n: usize) -> String {
+        data.iter().take(n).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+    }
+
     /// Send raw bytes through the stream, optionally wrapping in TPKT.
     async fn send_packet(
         stream: &mut tokio::net::TcpStream,
         payload: &[u8],
         use_tpkt: bool,
     ) -> Result<(), std::io::Error> {
+        let mut full_buf: Vec<u8> = Vec::new();
         if use_tpkt {
             let total_len = payload.len() + 4;
             let tpkt: [u8; 4] = [
@@ -134,17 +168,72 @@ impl PlcSimulator {
                 (total_len >> 8) as u8,
                 (total_len & 0xFF) as u8,
             ];
-            stream.write_all(&tpkt).await?;
+            full_buf.extend_from_slice(&tpkt);
         }
-        stream.write_all(payload).await?;
+        full_buf.extend_from_slice(payload);
+        info!("[S7] >>> SEND {} bytes, head=[{}]", full_buf.len(), Self::hex_head(&full_buf, 10));
+        stream.write_all(&full_buf).await?;
         stream.flush().await?;
         Ok(())
+    }
+
+    /// Update a connection entry; if insert is Some, insert new entry
+    fn update_connection(&self, conn_id: usize, framing: &str, state: &str, increment: u64, insert: Option<ClientConnection>) {
+        let mut conns = self.connections.write().unwrap();
+        if let Some(entry) = insert {
+            conns.push(entry);
+            return;
+        }
+        if let Some(c) = conns.iter_mut().find(|c| c.id == conn_id) {
+            c.last_activity = chrono::Utc::now().to_rfc3339();
+            c.requests_count += increment;
+            if !framing.is_empty() { c.framing = framing.to_string(); }
+            if !state.is_empty() { c.state = state.to_string(); }
+        }
+    }
+    
+    /// Remove a connection entry
+    fn remove_connection(&self, conn_id: usize) {
+        let mut conns = self.connections.write().unwrap();
+        conns.retain(|c| c.id != conn_id);
     }
 
     pub async fn handle_connection(&self, mut stream: tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = stream.peer_addr()?;
         info!("[S7] +++ CONNECT from {}", addr);
         
+        // Register connection
+        let conn_id = CONNECTION_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = ClientConnection {
+            id: conn_id,
+            remote_addr: addr.to_string(),
+            connected_at: now.clone(),
+            last_activity: now.clone(),
+            requests_count: 0,
+            framing: "detecting".to_string(),
+            state: "connecting".to_string(),
+        };
+        self.update_connection(conn_id, "", "", 0, Some(conn));
+        
+        // Run the actual handler, then cleanup
+        let result = self.handle_connection_inner(&mut stream, addr, conn_id).await;
+        
+        // Unregister connection
+        self.remove_connection(conn_id);
+        info!("[S7] --- DISCONNECT from {} (id={})", addr, conn_id);
+        
+        result
+    }
+    
+    /// Inner connection handler
+    async fn handle_connection_inner(
+        &self,
+        mut stream: &mut tokio::net::TcpStream,
+        addr: std::net::SocketAddr,
+        conn_id: usize,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    {
         // Disable Nagle to ensure immediate response
         let _ = stream.set_nodelay(true);
         
@@ -163,6 +252,7 @@ impl PlcSimulator {
         // Detect framing: TPKT vs raw COTP
         let use_tpkt = buf[buf_start] == 0x03;
         debug!("[S7] Framing detected: {}", if use_tpkt { "TPKT (RFC 1006)" } else { "Raw COTP" });
+        self.update_connection(conn_id, if use_tpkt { "TPKT" } else { "Raw COTP" }, "handshake", 0, None);
         
         // For TPKT, read 3 more bytes for full header (already have 1)
         if use_tpkt {
@@ -171,7 +261,8 @@ impl PlcSimulator {
                 return Ok(());
             }
             let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
-            buf_start += 4;
+            // Consume 4-byte TPKT header via consume_buf
+            let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, 4);
             
             // Read full COTP CR payload
             if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, tpkt_len - 4).await? {
@@ -218,6 +309,7 @@ impl PlcSimulator {
         debug!("[S7] Sent COTP DT (TPKT={})", use_tpkt);
         
         // --- Main request loop ---
+        info!("[S7] Entering main loop, use_tpkt={}, buf_start={}, buf_end={}", use_tpkt, buf_start, buf_end);
         loop {
             if use_tpkt {
                 // TPKT mode: always read TPKT header first
@@ -230,14 +322,23 @@ impl PlcSimulator {
                     return Ok(());
                 }
                 let tpkt_len = ((buf[buf_start + 2] as usize) << 8) | (buf[buf_start + 3] as usize);
-                buf_start += 4;
+                info!("[S7] TPKT header: ver={:#x}, len={}, buf_start={}, buf_end={}", buf[buf_start], tpkt_len, buf_start, buf_end);
+                // Consume the 4-byte TPKT header via consume_buf for consistency
+                let _ = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, 4);
                 
-                if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, tpkt_len - 4).await? {
+                if tpkt_len < 4 {
+                    warn!("[S7] Invalid TPKT length {}, closing", tpkt_len);
                     return Ok(());
                 }
-                let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, tpkt_len - 4)
+                let payload_len = tpkt_len - 4;
+                if payload_len > 0 {
+                    if !Self::read_exact_buf(&mut stream, &mut buf, &mut buf_start, &mut buf_end, payload_len).await? {
+                        return Ok(());
+                    }
+                }
+                let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, payload_len)
                     .unwrap_or(&[][..]);
-                self.process_payload(&payload, &addr, &mut stream, use_tpkt).await?;
+                self.process_payload(&payload, &addr, &mut stream, use_tpkt, conn_id).await?;
             } else {
                 // Raw mode: peek first byte to detect frame type
                 let avail = buf_end - buf_start;
@@ -274,7 +375,7 @@ impl PlcSimulator {
                     let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
                         .unwrap_or(&[][..]);
                     info!("[S7] S7 packet processed ({} bytes, param={}, data={})", s7_total, param_len, data_len);
-                    self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                    self.process_payload(payload, &addr, &mut stream, use_tpkt, conn_id).await?;
                 } else {
                     // COTP: check PDU type to determine length
                     if first == 0x02 {
@@ -303,7 +404,7 @@ impl PlcSimulator {
                                 info!("[S7] COTP-DT S7 processing {} bytes...", s7_total);
                                 let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
                                     .unwrap_or(&[][..]);
-                                self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                                self.process_payload(payload, &addr, &mut stream, use_tpkt, conn_id).await?;
                                 info!("[S7] COTP-DT S7 done, bs={} be={}", buf_start, buf_end);
                             } else {
                                 info!("[S7] COTP-DT S7 need more: {} < {}", avail, s7_total);
@@ -361,7 +462,7 @@ impl PlcSimulator {
                             }
                             let payload = Self::consume_buf(&buf, &mut buf_start, &mut buf_end, s7_total)
                                 .unwrap_or(&[][..]);
-                            self.process_payload(payload, &addr, &mut stream, use_tpkt).await?;
+                            self.process_payload(payload, &addr, &mut stream, use_tpkt, conn_id).await?;
                         }
                     } else {
                         // Unknown byte - skip it (could be leftover data from previous packet)
@@ -376,7 +477,8 @@ impl PlcSimulator {
 
     
     /// Process a TPKT payload (may contain COTP DT and/or S7 packets)
-    async fn process_payload(&self, payload: &[u8], addr: &std::net::SocketAddr, stream: &mut tokio::net::TcpStream, use_tpkt: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn process_payload(&self, payload: &[u8], addr: &std::net::SocketAddr, stream: &mut tokio::net::TcpStream, use_tpkt: bool, conn_id: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("[S7] process_payload: {} bytes, head=[{}]", payload.len(), Self::hex_head(payload, 10));
         let mut offset = 0;
         
         while offset < payload.len() {
@@ -408,27 +510,47 @@ impl PlcSimulator {
                 offset += total_len;
                 
                 // Handle S7 request
-                let response = self.handle_request(pdu_type, pdu_ref, &full_packet[10..]).await;
+                let response = self.handle_request(pdu_type, pdu_ref, &full_packet[10..], conn_id).await;
                 
-                // Send TPKT-wrapped response
+                // Send TPKT + COTP DT + S7 response
                 if let Some(resp) = response {
                     if use_tpkt {
+                        // TPKT payload = COTP DT header (3 bytes) + S7 PDU
+                        let cotp_dt_header: [u8; 3] = [0x02, 0xF0, 0x80];
+                        let payload_len = cotp_dt_header.len() + resp.len();
                         let tpkt_resp: Vec<u8> = vec![
                             0x03, 0x00,
-                            ((resp.len() + 4) >> 8) as u8, ((resp.len() + 4) & 0xFF) as u8,
+                            ((payload_len + 4) >> 8) as u8, ((payload_len + 4) & 0xFF) as u8,
                         ];
-                        stream.write_all(&tpkt_resp).await?;
+                        let mut send_buf = Vec::with_capacity(4 + 3 + resp.len());
+                        send_buf.extend_from_slice(&tpkt_resp);
+                        send_buf.extend_from_slice(&cotp_dt_header);
+                        send_buf.extend_from_slice(&resp);
+                        info!("[S7] >>> SEND {} bytes (TPKT+COTP+S7), head=[{}]", send_buf.len(), Self::hex_head(&send_buf, 10));
+                        stream.write_all(&send_buf).await?;
+                    } else {
+                        info!("[S7] >>> SEND {} bytes (S7), head=[{}]", resp.len(), Self::hex_head(&resp, 10));
+                        stream.write_all(&resp).await?;
                     }
-                    stream.write_all(&resp).await?;
                     stream.flush().await?;
                     debug!("[S7] Sent response: {} bytes (TPKT={})", resp.len(), use_tpkt);
                 }
+            } else if remaining[0] == 0x02 {
+                // COTP DT: [02 | F0 | 80] — 3 bytes, no LI field
+                // Just skip the 3-byte COTP DT header, then continue processing S7 data
+                let dt_header_len = if remaining.len() >= 3 && remaining[2] == 0x80 {
+                    3 // [02, F0, 80]
+                } else if remaining.len() >= 2 {
+                    2 // [02, F0] — minimal DT header
+                } else {
+                    1 // just the type byte
+                };
+                debug!("[S7] Skipping COTP DT header: {} bytes", dt_header_len);
+                offset += dt_header_len;
             } else {
-                // COTP packet (DT or other)
-                // Raw COTP: [type(1) | LI(1) | rest(LI-2 bytes)]
-                // COTP DT: 02 06 F0 80 00 00 00 → type=02, LI=06 (6 total bytes)
+                // Other COTP packet (CR, CC, DR, etc.): [type(1) | LI(1) | rest(LI-2 bytes)]
                 let cotp_total = remaining.len().min(if remaining.len() >= 2 { remaining[1] as usize } else { 1 });
-                debug!("[S7] Skipping COTP PDU: {} bytes", cotp_total);
+                debug!("[S7] Skipping COTP PDU type={:#x}: {} bytes", remaining[0], cotp_total);
                 offset += cotp_total;
             }
         }
@@ -437,7 +559,7 @@ impl PlcSimulator {
     }
     
     /// Handle S7 request
-    async fn handle_request(&self, pdu_type: u8, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
+    async fn handle_request(&self, pdu_type: u8, pdu_ref: u16, param_data: &[u8], conn_id: usize) -> Option<Vec<u8>> {
         match pdu_type {
             0x01 => { // Job
                 if param_data.len() < 1 {
@@ -449,14 +571,17 @@ impl PlcSimulator {
                 match function_code {
                     0xF0 => { // Setup Communication
                         debug!("Setup Communication");
+                        self.update_connection(conn_id, "", "connected", 0, None);
                         Some(self.build_setup_response(pdu_ref))
                     }
                     0x04 => { // Read
                         debug!("Read request");
+                        self.update_connection(conn_id, "", "", 1, None);
                         self.handle_read_request(pdu_ref, param_data).await
                     }
                     0x05 => { // Write
                         debug!("Write request");
+                        self.update_connection(conn_id, "", "", 1, None);
                         self.handle_write_request(pdu_ref, param_data).await
                     }
                     _ => {
@@ -486,22 +611,14 @@ impl PlcSimulator {
         ]
     }
     
-    /// Handle read request
-    /// param_data: full S7 params = [function_code, item_count, item_spec...]
+    /// Handle read request (S7 standard response format)
+    /// 
+    /// Request param_data: [function_code(0x04), item_count, item_spec...]
+    /// 
+    /// Response format (S7 standard):
+    ///   Param section: [function_code(0x04), item_count] (2 bytes)
+    ///   Data section (per item): [return_code, transport_size, data_len_hi, data_len_lo, actual_data...]
     async fn handle_read_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
-        // S7 Read Request format:
-        // Byte 0: Function code (0x04)
-        // Byte 1: Item count
-        // For each item:
-        //   Byte 0: Specification type (0x12 = variable)
-        //   Byte 1: Length of spec data that follows (typically 0x0A = 10)
-        //   Bytes 2-3: Transport size (0x10) + reserved
-        //   Bytes 4-5: Number of elements (big-endian)
-        //   Bytes 6-7: DB number (big-endian)
-        //   Byte 8: Area code
-        //   Bytes 9-10-11: Byte offset (3 bytes)
-        // Total per item: 2 (header) + var_len bytes of spec
-
         if param_data.len() < 2 {
             return None;
         }
@@ -509,10 +626,8 @@ impl PlcSimulator {
         let item_count = param_data[1] as usize;
         let memory = self.memory.read().ok()?;
         
-        // Param section of response: function(1) + count(1) + per-item result(4 bytes each)
-        // Data section of response: per-item actual bytes
-        let mut param_results = Vec::new();  // goes into param section
-        let mut data_results: Vec<u8> = Vec::new();    // goes into data section
+        // Data section: per-item [return_code, transport_size, len_hi, len_lo, data...]
+        let mut data_results: Vec<u8> = Vec::new();
         let mut read_items = Vec::new();
         
         let mut offset = 2;  // After function code + item count
@@ -523,14 +638,13 @@ impl PlcSimulator {
             let spec_type = param_data[offset];
             let spec_len = param_data[offset + 1] as usize;
             
-            // Need at least 2 (header) + spec_len bytes
             if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
-                // Push error result
-                param_results.push(0x0A);
-                param_results.push(0x00);
-                param_results.push(0x00);
-                param_results.push(0x00);
+                // Push error item in data section
+                data_results.push(0x0A); // Error: data not available
+                data_results.push(0x00);
+                data_results.push(0x00);
+                data_results.push(0x00);
                 continue;
             }
             
@@ -539,49 +653,45 @@ impl PlcSimulator {
             let db_num = ((param_data[offset + 6] as u16) << 8) | (param_data[offset + 7] as u16);
             let area_code = param_data[offset + 8];
             let start = ((param_data[offset + 9] as u16) << 8) | (param_data[offset + 10] as u16);
-            // For 3-byte offset: start = (hi << 16) | (mid << 8) | lo
-            // But for S7-300, 2 bytes is enough
             
             let area = MemoryArea::from_byte(area_code);
             
-            let result = if let Some(area) = area {
+            if let Some(area) = area {
                 match memory.read(area, db_num, start as usize, num_elements as usize) {
                     Some(data) => {
-                        param_results.push(0xFF);                          // Success
-                        param_results.push(TransportSize::Byte as u8);     // Transport size
-                        param_results.push((data.len() >> 8) as u8);       // Data length high
-                        param_results.push((data.len() & 0xFF) as u8);     // Data length low
+                        data_results.push(0xFF);                          // Success return code
+                        data_results.push(TransportSize::Byte as u8);     // Transport size
+                        data_results.push((data.len() >> 8) as u8);       // Data length high
+                        data_results.push((data.len() & 0xFF) as u8);     // Data length low
                         data_results.extend(&data);
                         
                         let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
                         read_items.push(format!("{:?}[{}] offset={} len={} data=[{}]",
                             area, db_num, start, num_elements, hex_str));
-                        true
                     }
                     None => {
-                        param_results.push(0x0A);  // Error: data not available
-                        param_results.push(0x00);
-                        param_results.push(0x00);
-                        param_results.push(0x00);
+                        data_results.push(0x0A);  // Error: data not available
+                        data_results.push(0x00);
+                        data_results.push(0x00);
+                        data_results.push(0x00);
                         read_items.push(format!("{:?}[{}] offset={} len={} FAIL",
                             area, db_num, start, num_elements));
-                        false
                     }
                 }
             } else {
-                param_results.push(0x0A);  // Error: unknown area
-                param_results.push(0x00);
-                param_results.push(0x00);
-                param_results.push(0x00);
-                false
-            };
+                data_results.push(0x0A);  // Error: unknown area
+                data_results.push(0x00);
+                data_results.push(0x00);
+                data_results.push(0x00);
+            }
             
-            let _ = (transport, result);
+            let _ = transport;
             offset += 2 + spec_len;
         }
         
-        let param_len = 2 + param_results.len();  // function + count + results
-        let data_len = data_results.len();
+        // Param section: only function_code + item_count
+        let param_len = 2u16;
+        let data_len = data_results.len() as u16;
         
         let mut response = vec![
             PROTOCOL_ID, PduType::AckData as u8, 0x00, 0x00,
@@ -590,7 +700,6 @@ impl PlcSimulator {
             (data_len >> 8) as u8, (data_len & 0xFF) as u8,
             FunctionCode::Read as u8, item_count as u8,
         ];
-        response.extend(param_results);
         response.extend(data_results);
         
         if !read_items.is_empty() {
@@ -600,8 +709,11 @@ impl PlcSimulator {
         Some(response)
     }
     
-    /// Handle write request
-    /// param_data: full S7 params = [function_code, item_count, item_spec...]
+    /// Handle write request (S7 standard response format)
+    /// 
+    /// Response format (S7 standard):
+    ///   Param section: [function_code(0x05), item_count] (2 bytes)
+    ///   Data section: [return_code(0xFF)] per item (1 byte each)
     async fn handle_write_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
         if param_data.len() < 2 {
             return None;
@@ -613,6 +725,8 @@ impl PlcSimulator {
         let mut offset = 2;  // After function code + item count
         let mut success_count = 0;
         let mut write_items = Vec::new();
+        // Data section: one return code byte per item
+        let mut data_results: Vec<u8> = Vec::new();
         
         for _ in 0..item_count {
             if offset + 2 > param_data.len() { break; }
@@ -622,6 +736,7 @@ impl PlcSimulator {
             
             if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
+                data_results.push(0x0A); // Error
                 continue;
             }
             
@@ -632,7 +747,7 @@ impl PlcSimulator {
             
             let area = MemoryArea::from_byte(area_code);
             
-            if let Some(area) = area {
+            let write_ok = if let Some(area) = area {
                 let data_start = offset + 2 + spec_len;
                 let data_end = data_start + num_elements as usize;
                 if data_end <= param_data.len() {
@@ -642,29 +757,43 @@ impl PlcSimulator {
                         let hex_str = data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
                         write_items.push(format!("{:?}[{}] offset={} len={} data=[{}] OK",
                             area, db_num, start, num_elements, hex_str));
+                        true
                     } else {
                         write_items.push(format!("{:?}[{}] offset={} len={} FAIL",
                             area, db_num, start, num_elements));
+                        false
                     }
+                } else {
+                    false
                 }
-            }
+            } else {
+                false
+            };
             
+            data_results.push(if write_ok { 0xFF } else { 0x0A });
             offset += 2 + spec_len;
         }
+        
+        // Param section: only function_code + item_count
+        let param_len = 2u16;
+        let data_len = data_results.len() as u16;
         
         let response = vec![
             PROTOCOL_ID, PduType::AckData as u8, 0x00, 0x00,
             (pdu_ref >> 8) as u8, (pdu_ref & 0xFF) as u8,
-            0x00, 0x02, // Param len
-            0x00, item_count as u8, // Data len
+            (param_len >> 8) as u8, (param_len & 0xFF) as u8,
+            (data_len >> 8) as u8, (data_len & 0xFF) as u8,
             FunctionCode::Write as u8, item_count as u8,
         ];
+        
+        let mut full_response = response;
+        full_response.extend(data_results);
         
         if !write_items.is_empty() {
             info!("[WRITE] items={}/{} {}", success_count, item_count, write_items.join(" | "));
         }
         
-        Some(response)
+        Some(full_response)
     }
     
     /// Build user data response
@@ -679,7 +808,7 @@ impl PlcSimulator {
     }
     
     /// Start S7 server
-    pub async fn start_s7_server(port: u16, memory: SharedMemory, plc_type: &str, rack: u8, slot: u8) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start_s7_server(port: u16, memory: SharedMemory, plc_type: &str, rack: u8, slot: u8, connections: ConnectionList) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = format!("0.0.0.0:{}", port);
         info!("S7 Server listening on {}", addr);
         
@@ -688,7 +817,7 @@ impl PlcSimulator {
         loop {
             if let Ok((stream, addr)) = listener.accept().await {
                 info!("[S7] Incoming connection from {}", addr);
-                let simulator = PlcSimulator::new(plc_type, rack, slot, memory.clone());
+                let simulator = PlcSimulator::new(plc_type, rack, slot, memory.clone(), connections.clone());
                 tokio::spawn(async move {
                     if let Err(e) = simulator.handle_connection(stream).await {
                         error!("[S7] Handler error from {}: {}", addr, e);

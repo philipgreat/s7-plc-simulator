@@ -15,12 +15,14 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::memory::{SharedMemory, MemoryArea, PlcMemory};
+use crate::{ConnectionList, ClientConnection};
 
 /// Application state
 #[derive(Clone)]
 pub struct AppState {
     pub memory: SharedMemory,
     pub s7_port: u16,
+    pub connections: ConnectionList,
 }
 
 /// Health check response
@@ -358,6 +360,15 @@ pub async fn get_flags(State(state): State<AppState>) -> Json<serde_json::Value>
     }))
 }
 
+/// GET /api/connections - List active S7 client connections
+pub async fn list_connections(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let conns = state.connections.read().unwrap();
+    Json(serde_json::json!({
+        "count": conns.len(),
+        "connections": conns.clone()
+    }))
+}
+
 /// Create the router
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -373,14 +384,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/memory/inputs", get(get_inputs))
         .route("/api/memory/outputs", get(get_outputs))
         .route("/api/memory/flags", get(get_flags))
+        .route("/api/connections", get(list_connections))
         .with_state(state)
 }
 
 /// Start the web server
-pub async fn start_server(port: u16, memory: SharedMemory, s7_port: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_server(port: u16, memory: SharedMemory, s7_port: u16, connections: ConnectionList) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         memory,
         s7_port,
+        connections,
     };
     
     let addr = format!("0.0.0.0:{}", port);
