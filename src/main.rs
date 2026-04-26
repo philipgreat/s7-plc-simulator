@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use tracing_subscriber::prelude::*;
-use s7_plc_simulator::{create_shared_memory, create_shared_memory_from_config, create_connection_list, PlcSimulator, api};
+use s7_plc_simulator::{create_shared_memory, create_shared_memory_from_config, create_connection_list, create_log_buffer, PlcSimulator, api};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -89,6 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create shared connection list
     let connections = create_connection_list();
     
+    // Create shared log buffer (last 10000 entries)
+    let log_buffer = create_log_buffer();
+    
     // Print memory info
     {
         let mem = memory.read().unwrap();
@@ -109,18 +112,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Spawn S7 server
     let memory_clone = memory.clone();
     let connections_clone = connections.clone();
+    let log_buffer_clone = log_buffer.clone();
     let plc_type = cli.plc_type.clone();
     let s7_port = cli.s7_port;
     let rack = cli.rack;
     let slot = cli.slot;
     
     let s7_handle = tokio::spawn(async move {
-        PlcSimulator::start_s7_server(s7_port, memory_clone, &plc_type, rack, slot, connections_clone).await
+        PlcSimulator::start_s7_server(s7_port, memory_clone, &plc_type, rack, slot, connections_clone, log_buffer_clone).await
     });
     
     // Spawn Web API server
     let web_handle = tokio::spawn(async move {
-        api::start_server(cli.web_port, memory, cli.s7_port, connections).await
+        api::start_server(cli.web_port, memory, cli.s7_port, connections, log_buffer).await
     });
     
     // Wait for Ctrl+C, then shutdown gracefully

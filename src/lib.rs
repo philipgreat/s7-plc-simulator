@@ -7,6 +7,7 @@ pub mod memory;
 pub mod api;
 
 use std::sync::{Arc, RwLock};
+use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
@@ -31,9 +32,46 @@ pub struct ClientConnection {
     pub state: String,
 }
 
+/// Shared in-memory log buffer (last 10000 entries)
+pub type LogBuffer = Arc<RwLock<VecDeque<LogEntry>>>;
+
+/// Log entry structure
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+impl LogEntry {
+    pub fn new(level: &str, message: &str) -> Self {
+        let now = chrono::Local::now();
+        Self {
+            timestamp: now.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+            level: level.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
 /// Create a new shared connection list
 pub fn create_connection_list() -> ConnectionList {
     Arc::new(RwLock::new(Vec::new()))
+}
+
+/// Create a new log buffer
+pub fn create_log_buffer() -> LogBuffer {
+    Arc::new(RwLock::new(VecDeque::with_capacity(10000)))
+}
+
+/// Add a log entry to the buffer (thread-safe, auto-trims to 10000)
+pub fn add_log_entry(log_buffer: &LogBuffer, level: &str, message: &str) {
+    if let Ok(mut logs) = log_buffer.write() {
+        logs.push_back(LogEntry::new(level, message));
+        while logs.len() > 10000 {
+            logs.pop_front();
+        }
+    }
 }
 
 static CONNECTION_ID_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -76,17 +114,20 @@ pub struct PlcSimulator {
     slot: u8,
     /// Active connections tracker
     connections: ConnectionList,
+    /// Log buffer for web UI
+    log_buffer: LogBuffer,
 }
 
 impl PlcSimulator {
     /// Create new PLC simulator
-    pub fn new(plc_type: &str, rack: u8, slot: u8, memory: SharedMemory, connections: ConnectionList) -> Self {
+    pub fn new(plc_type: &str, rack: u8, slot: u8, memory: SharedMemory, connections: ConnectionList, log_buffer: LogBuffer) -> Self {
         Self {
             memory,
             plc_type: plc_type.to_string(),
             rack,
             slot,
             connections,
+            log_buffer,
         }
     }
     
@@ -204,6 +245,7 @@ impl PlcSimulator {
     pub async fn handle_connection(&self, mut stream: tokio::net::TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = stream.peer_addr()?;
         info!("[S7] +++ CONNECT from {}", addr);
+        add_log_entry(&self.log_buffer, "INFO", &format!("S7 client connected from {}", addr));
         
         // Register connection
         let conn_id = CONNECTION_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -225,6 +267,7 @@ impl PlcSimulator {
         // Unregister connection
         self.remove_connection(conn_id);
         info!("[S7] --- DISCONNECT from {} (id={})", addr, conn_id);
+        add_log_entry(&self.log_buffer, "INFO", &format!("S7 client disconnected from {} (id={})", addr, conn_id));
         
         result
     }
@@ -714,6 +757,7 @@ impl PlcSimulator {
         
         if !read_items.is_empty() {
             info!("[READ] items={} {}", read_items.len(), read_items.join(" | "));
+            add_log_entry(&self.log_buffer, "INFO", &format!("S7 Read: {}", read_items.join(" | ")));
         }
         
         Some(response)
@@ -807,6 +851,7 @@ impl PlcSimulator {
         
         if !write_items.is_empty() {
             info!("[WRITE] items={}/{} {}", success_count, item_count, write_items.join(" | "));
+            add_log_entry(&self.log_buffer, "INFO", &format!("S7 Write: {}", write_items.join(" | ")));
         }
         
         Some(full_response)
@@ -824,7 +869,7 @@ impl PlcSimulator {
     }
     
     /// Start S7 server
-    pub async fn start_s7_server(port: u16, memory: SharedMemory, plc_type: &str, rack: u8, slot: u8, connections: ConnectionList) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start_s7_server(port: u16, memory: SharedMemory, plc_type: &str, rack: u8, slot: u8, connections: ConnectionList, log_buffer: LogBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = format!("0.0.0.0:{}", port);
         info!("S7 Server listening on {}", addr);
         
@@ -833,7 +878,7 @@ impl PlcSimulator {
         loop {
             if let Ok((stream, addr)) = listener.accept().await {
                 info!("[S7] Incoming connection from {}", addr);
-                let simulator = PlcSimulator::new(plc_type, rack, slot, memory.clone(), connections.clone());
+                let simulator = PlcSimulator::new(plc_type, rack, slot, memory.clone(), connections.clone(), log_buffer.clone());
                 tokio::spawn(async move {
                     if let Err(e) = simulator.handle_connection(stream).await {
                         error!("[S7] Handler error from {}: {}", addr, e);

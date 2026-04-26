@@ -202,6 +202,9 @@ body{font-family:'Segoe UI','Microsoft YaHei UI',-apple-system,sans-serif;backgr
             <div class="tab-item active" data-tab="welcome" onclick="switchTab('welcome')">
                 <span class="tab-icon">🏠</span> 欢迎页
             </div>
+            <div class="tab-item" data-tab="logs" onclick="switchTab('logs')">
+                <span class="tab-icon">📋</span> 日志
+            </div>
         </div>
 
         <!-- Welcome tab -->
@@ -211,6 +214,18 @@ body{font-family:'Segoe UI','Microsoft YaHei UI',-apple-system,sans-serif;backgr
                 <div class="text">S7 PLC 变量监控与观察</div>
                 <div class="hint" onclick="addAllToWatch()">← 从左侧选择数据块，或点击此处添加所有变量到监控表</div>
             </div>
+        </div>
+
+        <!-- Logs tab -->
+        <div class="tab-content" id="tab-logs">
+            <div style="padding:8px;background:var(--tia-panel);border-bottom:1px solid var(--tia-border);display:flex;align-items:center;gap:8px;">
+                <button class="tb-btn" onclick="refreshLogs()">🔄 刷新</button>
+                <label style="display:flex;align-items:center;gap:4px;color:var(--tia-text-dim);font-size:11px;">
+                    <input type="checkbox" id="autoRefreshLogs" checked onchange="toggleLogAutoRefresh()"> 自动刷新
+                </label>
+                <span style="margin-left:auto;color:var(--tia-text-dim);font-size:11px;" id="logCount">0 条</span>
+            </div>
+            <div id="logContainer" style="flex:1;overflow:auto;font-family:'Cascadia Code','Consolas',monospace;font-size:11px;padding:4px;"></div>
         </div>
     </div>
 </div>
@@ -335,6 +350,70 @@ async function loadDbList() {
 }
 
 // ═══════════════════════════════════════════════
+//  Log Viewer
+// ═══════════════════════════════════════════════
+let logAutoRefresh = true;
+let logRefreshTimer = null;
+
+async function refreshLogs() {
+    try {
+        const data = await api('/api/logs');
+        const container = document.getElementById('logContainer');
+        const countEl = document.getElementById('logCount');
+        if (!container) return;
+
+        countEl.textContent = (data.count || 0) + ' 条';
+
+        if (!data.logs || data.logs.length === 0) {
+            container.innerHTML = '<div style="color:var(--tia-text-dim);padding:20px;text-align:center;">暂无日志</div>';
+            return;
+        }
+
+        let html = '<table style="width:100%;border-collapse:collapse;">';
+        html += '<thead style="position:sticky;top:0;background:var(--tia-panel);z-index:1;">';
+        html += '<tr style="border-bottom:1px solid var(--tia-border);">';
+        html += '<th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--tia-text-dim);width:160px;">时间</th>';
+        html += '<th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--tia-text-dim);width:60px;">级别</th>';
+        html += '<th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--tia-text-dim);">消息</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const log of data.logs) {
+            const levelColor = {
+                'INFO': 'var(--tia-blue)',
+                'WARN': '#e6a700',
+                'ERROR': '#e06c75'
+            }[log.level] || 'var(--tia-text-dim)';
+
+            html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">';
+            html += `<td style="padding:3px 8px;color:var(--tia-text-dim);white-space:nowrap;">${log.timestamp || ''}</td>`;
+            html += `<td style="padding:3px 8px;"><span style="color:${levelColor};font-weight:600;font-size:10px;">${log.level || ''}</span></td>`;
+            html += `<td style="padding:3px 8px;color:var(--tia-text);word-break:break-all;">${escapeHtml(log.message || '')}</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (e) {
+        console.warn('Failed to load logs:', e);
+    }
+}
+
+function toggleLogAutoRefresh() {
+    logAutoRefresh = document.getElementById('autoRefreshLogs').checked;
+    if (logAutoRefresh && !logRefreshTimer) {
+        logRefreshTimer = setInterval(refreshLogs, 3000);
+    } else if (!logAutoRefresh && logRefreshTimer) {
+        clearInterval(logRefreshTimer);
+        logRefreshTimer = null;
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ═══════════════════════════════════════════════
 //  Sidebar Tree
 // ═══════════════════════════════════════════════
 function buildSidebar(filter = '') {
@@ -403,6 +482,17 @@ function typeIcon(type) {
 function switchTab(tabId) {
     document.querySelectorAll('.tab-item').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tabId));
+    if (tabId === 'logs') {
+        refreshLogs();
+        if (logAutoRefresh && !logRefreshTimer) {
+            logRefreshTimer = setInterval(refreshLogs, 3000);
+        }
+    } else {
+        if (logRefreshTimer) {
+            clearInterval(logRefreshTimer);
+            logRefreshTimer = null;
+        }
+    }
 }
 
 function openDbWatchTab(dbNum) {

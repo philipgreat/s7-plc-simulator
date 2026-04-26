@@ -855,7 +855,8 @@ fn test_client_connection_serialize() {
 fn create_test_simulator() -> PlcSimulator {
     let memory = create_shared_memory();
     let connections = create_connection_list();
-    PlcSimulator::new("S7-1200", 0, 1, memory, connections)
+    let log_buffer = create_log_buffer();
+    PlcSimulator::new("S7-1200", 0, 1, memory, connections, log_buffer)
 }
 
 #[test]

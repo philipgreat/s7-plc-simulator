@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::memory::{SharedMemory, MemoryArea, PlcMemory, DataBlock, VariableDefinition};
-use crate::{ConnectionList, ClientConnection};
+use crate::{ConnectionList, ClientConnection, LogBuffer, LogEntry};
 
 /// Application state
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct AppState {
     pub memory: SharedMemory,
     pub s7_port: u16,
     pub connections: ConnectionList,
+    pub log_buffer: LogBuffer,
 }
 
 /// Health check response
@@ -437,6 +438,18 @@ pub async fn list_connections(State(state): State<AppState>) -> Json<serde_json:
     }))
 }
 
+/// GET /api/logs - Get last 10000 log entries (newest first)
+pub async fn get_logs(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let logs = state.log_buffer.read().unwrap();
+    // Convert to vector and reverse (newest first)
+    let mut entries: Vec<LogEntry> = logs.iter().cloned().collect();
+    entries.reverse();
+    Json(serde_json::json!({
+        "count": entries.len(),
+        "logs": entries
+    }))
+}
+
 /// Create the router
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -453,15 +466,17 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/memory/outputs", get(get_outputs))
         .route("/api/memory/flags", get(get_flags))
         .route("/api/connections", get(list_connections))
+        .route("/api/logs", get(get_logs))
         .with_state(state)
 }
 
 /// Start the web server
-pub async fn start_server(port: u16, memory: SharedMemory, s7_port: u16, connections: ConnectionList) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_server(port: u16, memory: SharedMemory, s7_port: u16, connections: ConnectionList, log_buffer: LogBuffer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         memory,
         s7_port,
         connections,
+        log_buffer,
     };
     
     let addr = format!("0.0.0.0:{}", port);
