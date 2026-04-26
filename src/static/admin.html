@@ -1,697 +1,894 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>S7 PLC Simulator - Admin</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            min-height: 100vh;
-            color: #e0e0e0;
-        }
-        
-        .header {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 20px 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .header h1 {
-            color: #00d4ff;
-            font-size: 24px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .status {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #00ff88;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 30px;
-        }
-        
-        .card {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .card-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: #fff;
-        }
-        
-        .btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-        
-        .btn-primary {
-            background: #00d4ff;
-            color: #000;
-        }
-        
-        .btn-primary:hover {
-            background: #00b8e6;
-            transform: translateY(-1px);
-        }
-        
-        .btn-danger {
-            background: #ff4757;
-            color: #fff;
-        }
-        
-        .btn-danger:hover {
-            background: #ff3344;
-        }
-        
-        .btn-success {
-            background: #2ed573;
-            color: #000;
-        }
-        
-        .btn-success:hover {
-            background: #26b863;
-        }
-        
-        .db-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 15px;
-        }
-        
-        .db-item {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 15px;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: 2px solid transparent;
-        }
-        
-        .db-item:hover {
-            background: rgba(0, 212, 255, 0.1);
-            border-color: #00d4ff;
-        }
-        
-        .db-item.selected {
-            border-color: #00d4ff;
-            background: rgba(0, 212, 255, 0.15);
-        }
-        
-        .db-number {
-            font-size: 24px;
-            font-weight: 700;
-            color: #00d4ff;
-        }
-        
-        .db-size {
-            font-size: 12px;
-            color: #888;
-            margin-top: 5px;
-        }
-        
-        .db-viewer {
-            display: none;
-        }
-        
-        .db-viewer.active {
-            display: block;
-        }
-        
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-        }
-        
-        .data-table th, .data-table td {
-            padding: 8px 12px;
-            text-align: left;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        
-        .data-table th {
-            background: rgba(0, 0, 0, 0.3);
-            color: #888;
-            font-weight: 500;
-            text-transform: uppercase;
-            font-size: 11px;
-        }
-        
-        .data-table tr:hover {
-            background: rgba(0, 212, 255, 0.05);
-        }
-        
-        .hex-view {
-            font-family: 'Courier New', monospace;
-            color: #00ff88;
-            letter-spacing: 1px;
-        }
-        
-        .int-view {
-            color: #ffd700;
-            font-family: 'Courier New', monospace;
-        }
-        
-        .real-view {
-            color: #ff6b9d;
-            font-family: 'Courier New', monospace;
-        }
-        
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.8);
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        
-        .modal.active {
-            display: flex;
-        }
-        
-        .modal-content {
-            background: #1a1a2e;
-            border-radius: 12px;
-            padding: 25px;
-            min-width: 400px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-        
-        .modal-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            color: #fff;
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 5px;
-            color: #888;
-            font-size: 13px;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 10px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 6px;
-            color: #fff;
-            font-size: 14px;
-        }
-        
-        .form-input:focus {
-            outline: none;
-            border-color: #00d4ff;
-        }
-        
-        .modal-actions {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-            margin-top: 20px;
-        }
-        
-        .memory-section {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
-        }
-        
-        .memory-block {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
-            padding: 15px;
-        }
-        
-        .memory-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: #00d4ff;
-            margin-bottom: 10px;
-        }
-        
-        .memory-hex {
-            font-family: 'Courier New', monospace;
-            font-size: 11px;
-            color: #00ff88;
-            word-break: break-all;
-            max-height: 100px;
-            overflow: auto;
-        }
-        
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            padding: 15px 25px;
-            background: #2ed573;
-            color: #000;
-            border-radius: 8px;
-            font-weight: 500;
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s;
-        }
-        
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-        
-        .toast.error {
-            background: #ff4757;
-            color: #fff;
-        }
-        
-        .write-form {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-        }
-        
-        .write-form input, .write-form select {
-            padding: 8px 12px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 6px;
-            color: #fff;
-            font-size: 13px;
-        }
-        
-        .write-form input {
-            width: 120px;
-        }
-        
-        .write-form select {
-            width: 100px;
-        }
-        
-        .tabs {
-            display: flex;
-            gap: 5px;
-            margin-bottom: 20px;
-        }
-        
-        .tab {
-            padding: 10px 20px;
-            background: rgba(0, 0, 0, 0.3);
-            border: none;
-            border-radius: 6px 6px 0 0;
-            color: #888;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        
-        .tab.active {
-            background: rgba(0, 212, 255, 0.2);
-            color: #00d4ff;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S7 PLC Simulator — 在线监控</title>
+<style>
+:root {
+    --tia-bg:#1e1e1e;--tia-panel:#252526;--tia-panel-alt:#2d2d30;--tia-panel-hover:#333337;
+    --tia-border:#3f3f46;--tia-border-light:#4f4f56;--tia-text:#ccc;--tia-text-dim:#858585;
+    --tia-text-bright:#e8e8e8;--tia-blue:#0078d4;--tia-blue-light:#1a8cff;--tia-blue-dim:#005a9e;
+    --tia-blue-glow:rgba(0,120,212,0.15);--val-bool:#569cd6;--val-int:#b5cea8;--val-real:#ce9178;
+    --val-string:#ce8f6a;--val-hex:#d7ba7d;--val-enum:#4ec9b0;--val-error:#f44747;
+    --val-modified:#ffc107;--qual-good:#6a9955;--qual-bad:#f44747;
+    --row-height:28px;--sidebar-width:260px;--toolbar-height:36px;--statusbar-height:24px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI','Microsoft YaHei UI',-apple-system,sans-serif;background:var(--tia-bg);color:var(--tia-text);font-size:13px;overflow:hidden;height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased}
+
+.titlebar{height:32px;background:#1b1b1c;border-bottom:1px solid #111;display:flex;align-items:center;padding:0 12px;gap:10px;flex-shrink:0;user-select:none}
+.titlebar-logo{width:18px;height:18px;background:var(--tia-blue);border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;color:#fff;letter-spacing:-0.5px}
+.titlebar-text{color:var(--tia-text-dim);font-size:12px}
+.titlebar-text strong{color:var(--tia-text-bright);font-weight:600}
+.titlebar-sep{color:#444;font-size:10px}
+.titlebar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.titlebar-badge{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(106,153,85,0.2);color:var(--qual-good);border:1px solid rgba(106,153,85,0.3)}
+.titlebar-badge.offline{background:rgba(244,68,71,0.15);color:var(--qual-bad);border-color:rgba(244,68,71,0.3)}
+
+.toolbar{height:var(--toolbar-height);background:var(--tia-panel);border-bottom:1px solid var(--tia-border);display:flex;align-items:center;padding:0 8px;gap:2px;flex-shrink:0}
+.toolbar-group{display:flex;align-items:center;gap:1px}
+.toolbar-sep{width:1px;height:20px;background:var(--tia-border);margin:0 6px}
+.tb-btn{height:26px;padding:0 8px;background:transparent;border:1px solid transparent;color:var(--tia-text-dim);cursor:pointer;font-size:12px;font-family:inherit;border-radius:2px;display:flex;align-items:center;gap:4px;white-space:nowrap;transition:all .1s}
+.tb-btn:hover{background:var(--tia-panel-hover);color:var(--tia-text-bright);border-color:var(--tia-border)}
+.tb-btn.active{background:var(--tia-blue-glow);color:var(--tia-blue-light);border-color:var(--tia-blue-dim)}
+.tb-btn .icon{font-size:14px;line-height:1}
+.tb-label{color:var(--tia-text-dim);font-size:11px;margin-left:4px;margin-right:2px}
+.tb-select{height:24px;background:var(--tia-bg);border:1px solid var(--tia-border);color:var(--tia-text);font-size:11px;font-family:inherit;padding:0 4px;border-radius:2px;outline:none;cursor:pointer}
+.tb-select:focus{border-color:var(--tia-blue)}
+
+.main{display:flex;flex:1;overflow:hidden}
+
+.sidebar{width:var(--sidebar-width);background:var(--tia-panel);border-right:1px solid var(--tia-border);display:flex;flex-direction:column;flex-shrink:0}
+.sidebar-header{padding:8px 12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tia-blue-light);border-bottom:1px solid var(--tia-border);display:flex;align-items:center;gap:6px}
+.sidebar-header .icon{font-size:13px}
+.sidebar-search{padding:6px 8px;border-bottom:1px solid var(--tia-border);position:relative}
+.sidebar-search input{width:100%;height:24px;background:var(--tia-bg);border:1px solid var(--tia-border);color:var(--tia-text);font-size:12px;font-family:inherit;padding:0 6px 0 22px;border-radius:2px;outline:none}
+.sidebar-search input:focus{border-color:var(--tia-blue)}
+.sidebar-search::before{content:'🔍';position:absolute;left:14px;top:10px;font-size:10px}
+.sidebar-tree{flex:1;overflow-y:auto;padding:4px 0}
+.tree-node{display:flex;align-items:center;padding:3px 8px 3px 12px;cursor:pointer;user-select:none;gap:5px;font-size:12px;transition:background .08s}
+.tree-node:hover{background:var(--tia-panel-hover)}
+.tree-node.selected{background:var(--tia-blue-glow);color:var(--tia-blue-light)}
+.tree-node .node-icon{font-size:13px;width:18px;text-align:center;flex-shrink:0}
+.tree-node .node-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-node .node-badge{font-size:10px;color:var(--tia-text-dim);background:var(--tia-bg);padding:0 4px;border-radius:2px}
+.tree-section{padding:4px 12px 2px 12px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--tia-text-dim);margin-top:4px}
+.tree-node.indent{padding-left:28px}
+
+.content{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+.tab-bar{display:flex;background:var(--tia-panel);border-bottom:1px solid var(--tia-border);flex-shrink:0;overflow-x:auto}
+.tab-item{padding:6px 16px;font-size:12px;cursor:pointer;border-right:1px solid var(--tia-border);white-space:nowrap;display:flex;align-items:center;gap:5px;color:var(--tia-text-dim);transition:all .1s;user-select:none}
+.tab-item:hover{background:var(--tia-panel-hover);color:var(--tia-text)}
+.tab-item.active{background:var(--tia-bg);color:var(--tia-text-bright);border-bottom:2px solid var(--tia-blue);margin-bottom:-1px}
+.tab-item .tab-icon{font-size:13px}
+.tab-item .tab-close{margin-left:6px;font-size:14px;opacity:.4;line-height:1}
+.tab-item .tab-close:hover{opacity:1}
+
+.tab-content{flex:1;overflow:hidden;display:none;flex-direction:column}
+.tab-content.active{display:flex}
+
+.watch-container{flex:1;overflow:auto;position:relative}
+.watch-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.watch-table thead{position:sticky;top:0;z-index:10}
+.watch-table th{height:26px;background:var(--tia-panel-alt);border:1px solid var(--tia-border);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;color:var(--tia-text-dim);padding:0 8px;text-align:left;user-select:none;white-space:nowrap}
+.watch-table th.col-name{width:200px}.watch-table th.col-address{width:160px}.watch-table th.col-format{width:72px}.watch-table th.col-value{width:180px}.watch-table th.col-hex{width:140px}.watch-table th.col-quality{width:56px}.watch-table th.col-comment{}
+.watch-table td{height:var(--row-height);border:1px solid rgba(63,63,70,.5);padding:0 8px;font-size:12px;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s}
+.watch-table tr:hover td{background:var(--tia-panel-hover)}
+.watch-table tr.selected td{background:var(--tia-blue-glow)}
+.watch-table tr.group-header td{background:var(--tia-panel);font-weight:600;color:var(--tia-blue-light);font-size:11px;height:24px;border-top:1px solid var(--tia-border-light)}
+
+.cell-name{font-weight:500;color:var(--tia-text-bright)}
+.cell-address{font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:11px;color:var(--tia-text-dim)}
+.cell-format select{background:transparent;border:none;color:var(--val-enum);font-size:11px;font-family:inherit;cursor:pointer;outline:none;padding:0;width:100%}
+.cell-value{font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;font-weight:600;cursor:default}
+.cell-value[data-type="BOOL"]{color:var(--val-bool)}.cell-value[data-type="BYTE"]{color:var(--val-int)}.cell-value[data-type="WORD"]{color:var(--val-int)}.cell-value[data-type="DWORD"]{color:var(--val-int)}.cell-value[data-type="INT"]{color:var(--val-int)}.cell-value[data-type="DINT"]{color:var(--val-int)}.cell-value[data-type="REAL"]{color:var(--val-real)}.cell-value[data-type="STRING"]{color:var(--val-string)}.cell-value[data-type="DT"]{color:var(--val-string)}
+.cell-value .enum-tag{font-size:10px;color:var(--val-enum);background:rgba(78,201,176,.1);border:1px solid rgba(78,201,176,.2);padding:0 4px;border-radius:2px;margin-left:6px;font-weight:500}
+.cell-value .unit-tag{font-size:10px;color:var(--tia-text-dim);font-weight:400;margin-left:3px}
+.cell-hex{font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:11px;color:var(--val-hex);letter-spacing:.5px}
+.cell-quality{display:flex;align-items:center;gap:4px}
+.quality-dot{width:7px;height:7px;border-radius:50%;background:var(--qual-good);flex-shrink:0}
+.quality-dot.bad{background:var(--qual-bad)}
+.quality-label{font-size:10px;color:var(--qual-good)}
+.quality-label.bad{color:var(--qual-bad)}
+.cell-comment{color:var(--tia-text-dim);font-size:11px;font-style:italic}
+
+@keyframes valueFlash{0%{background:rgba(255,193,7,.3)}100%{background:transparent}}
+.cell-value.changed{animation:valueFlash .8s ease-out}
+.cell-value.modified{color:var(--val-modified)!important}
+.cell-value input{width:100%;background:var(--tia-bg);border:1px solid var(--tia-blue);color:var(--val-modified);font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;font-weight:600;padding:0 4px;outline:none;border-radius:1px}
+
+.hex-viewer{flex:1;overflow:auto;font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:12px}
+.hex-table{width:100%;border-collapse:collapse;table-layout:fixed}
+.hex-table th{height:24px;background:var(--tia-panel-alt);border:1px solid var(--tia-border);font-size:10px;font-weight:600;color:var(--tia-text-dim);padding:0 6px;text-align:center;position:sticky;top:0;z-index:5}
+.hex-table td{height:22px;border:1px solid rgba(63,63,70,.3);padding:0 4px;text-align:center;color:var(--val-hex)}
+.hex-table td:first-child{color:var(--tia-text-dim);text-align:left;padding-left:8px;font-size:11px;width:80px}
+.hex-table td.var-byte{background:rgba(0,120,212,.08);color:var(--tia-blue-light)}
+.hex-table tr:hover td{background:var(--tia-panel-hover)}
+
+.statusbar{height:var(--statusbar-height);background:var(--tia-blue);display:flex;align-items:center;padding:0 10px;font-size:11px;color:#fff;gap:16px;flex-shrink:0}
+.statusbar-item{display:flex;align-items:center;gap:4px}
+.statusbar-right{margin-left:auto;display:flex;gap:16px}
+
+.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--tia-text-dim);gap:12px}
+.empty-state .icon{font-size:48px;opacity:.3}
+.empty-state .text{font-size:14px}
+.empty-state .hint{font-size:11px;color:var(--tia-blue);cursor:pointer}
+.empty-state .hint:hover{text-decoration:underline}
+
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:var(--tia-bg)}::-webkit-scrollbar-thumb{background:#555;border-radius:4px}::-webkit-scrollbar-thumb:hover{background:#666}
+
+.context-menu{position:fixed;background:var(--tia-panel);border:1px solid var(--tia-border-light);border-radius:4px;padding:4px 0;min-width:180px;z-index:1000;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none}
+.context-menu.show{display:block}
+.ctx-item{padding:5px 20px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tia-text)}
+.ctx-item:hover{background:var(--tia-blue-glow);color:var(--tia-blue-light)}
+.ctx-item .shortcut{margin-left:auto;font-size:10px;color:var(--tia-text-dim)}
+.ctx-sep{height:1px;background:var(--tia-border);margin:4px 0}
+
+.dialog-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:100}
+.dialog-overlay.show{display:flex}
+.dialog{background:var(--tia-panel);border:1px solid var(--tia-border-light);border-radius:4px;min-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.dialog-header{padding:12px 16px;border-bottom:1px solid var(--tia-border);font-size:13px;font-weight:600;color:var(--tia-text-bright)}
+.dialog-body{padding:16px}
+.dialog-row{display:flex;align-items:center;margin-bottom:10px;gap:10px}
+.dialog-row label{width:80px;font-size:12px;color:var(--tia-text-dim);text-align:right}
+.dialog-row input,.dialog-row select{flex:1;height:28px;background:var(--tia-bg);border:1px solid var(--tia-border);color:var(--tia-text);font-family:inherit;font-size:12px;padding:0 8px;border-radius:2px;outline:none}
+.dialog-row input:focus,.dialog-row select:focus{border-color:var(--tia-blue)}
+.dialog-footer{padding:10px 16px;border-top:1px solid var(--tia-border);display:flex;justify-content:flex-end;gap:8px}
+.dialog-btn{padding:5px 16px;font-size:12px;font-family:inherit;border:1px solid var(--tia-border);border-radius:2px;cursor:pointer;background:var(--tia-panel-alt);color:var(--tia-text)}
+.dialog-btn:hover{background:var(--tia-panel-hover)}
+.dialog-btn.primary{background:var(--tia-blue);border-color:var(--tia-blue);color:#fff}
+.dialog-btn.primary:hover{background:var(--tia-blue-dim)}
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>⚡ S7 PLC Simulator</h1>
-        <div class="status">
-            <div class="status-dot"></div>
-            <span>S7 Port: <strong id="s7Port">102</strong></span>
-            <span>DBs: <strong id="dbCount">0</strong></span>
-        </div>
+
+<!-- Title Bar -->
+<div class="titlebar">
+    <div class="titlebar-logo">S7</div>
+    <span class="titlebar-text"><strong>S7-PLC Simulator</strong></span>
+    <span class="titlebar-sep">|</span>
+    <span class="titlebar-text" id="titlePlcInfo">S7-1500 · Rack 0 / Slot 1</span>
+    <div class="titlebar-right">
+        <div class="titlebar-badge" id="connBadge">● 在线</div>
+        <span class="titlebar-text" style="font-size:11px" id="titleCycle">—</span>
     </div>
-    
-    <div class="container">
-        <div class="tabs">
-            <button class="tab active" data-tab="datablocks">Data Blocks</button>
-            <button class="tab" data-tab="memory">Memory Areas</button>
-        </div>
-        
-        <!-- Data Blocks Tab -->
-        <div id="datablocks-tab" class="tab-content">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">📦 Data Blocks</span>
-                    <button class="btn btn-primary" onclick="showCreateModal()">+ New DB</button>
-                </div>
-                <div class="db-list" id="dbList"></div>
-            </div>
-            
-            <div class="card db-viewer" id="dbViewer">
-                <div class="card-header">
-                    <span class="card-title">📄 DB<span id="currentDb">1</span></span>
-                    <div>
-                        <button class="btn btn-success" onclick="showWriteModal()">✏️ Write</button>
-                        <button class="btn btn-danger" onclick="clearDb()">🗑️ Clear</button>
-                        <button class="btn" onclick="closeViewer()">✖ Close</button>
-                    </div>
-                </div>
-                <div class="write-form" id="writeForm" style="display: none;">
-                    <input type="number" id="writeOffset" placeholder="Offset" min="0">
-                    <select id="writeType">
-                        <option value="byte">BYTE</option>
-                        <option value="word">WORD</option>
-                        <option value="dword">DWORD</option>
-                        <option value="int">INT</option>
-                        <option value="real">REAL</option>
-                        <option value="string">STRING</option>
-                        <option value="hex">HEX</option>
-                    </select>
-                    <input type="text" id="writeValue" placeholder="Value">
-                    <button class="btn btn-success" onclick="writeValue()">Write</button>
-                </div>
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Offset</th>
-                            <th>Hex</th>
-                            <th>Bytes</th>
-                            <th>INT</th>
-                            <th>REAL</th>
-                        </tr>
-                    </thead>
-                    <tbody id="dbContent"></tbody>
-                </table>
+</div>
+
+<!-- Toolbar -->
+<div class="toolbar">
+    <div class="toolbar-group">
+        <button class="tb-btn active" id="btnMonitor" onclick="toggleMonitor()"><span class="icon">👁</span> 监控</button>
+        <button class="tb-btn" id="btnModify" onclick="toggleModify()"><span class="icon">✏️</span> 修改</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+        <button class="tb-btn" onclick="addSelectedToWatch()" title="添加到监控表"><span class="icon">➕</span> 添加变量</button>
+        <button class="tb-btn" onclick="addAllToWatch()" title="全部添加"><span class="icon">📋</span> 全部监控</button>
+        <button class="tb-btn" onclick="clearWatch()" title="清空监控表"><span class="icon">🗑</span> 清空</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+        <span class="tb-label">刷新:</span>
+        <select class="tb-select" id="refreshRate" onchange="setRefreshRate(this.value)">
+            <option value="100">100ms</option>
+            <option value="250">250ms</option>
+            <option value="500" selected>500ms</option>
+            <option value="1000">1s</option>
+            <option value="2000">2s</option>
+            <option value="0">手动</option>
+        </select>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-group">
+        <button class="tb-btn" onclick="forceRefresh()" title="立即刷新"><span class="icon">🔄</span></button>
+        <button class="tb-btn" onclick="showCreateDbDialog()" title="新建 DB"><span class="icon">➕</span> 新建DB</button>
+    </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="sidebar-header"><span class="icon">📂</span> 项目树</div>
+        <div class="sidebar-search"><input type="text" placeholder="搜索变量..." id="searchInput" oninput="filterTree(this.value)"></div>
+        <div class="sidebar-tree" id="sidebarTree"></div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+        <div class="tab-bar" id="tabBar">
+            <div class="tab-item active" data-tab="welcome" onclick="switchTab('welcome')">
+                <span class="tab-icon">🏠</span> 欢迎页
             </div>
         </div>
-        
-        <!-- Memory Areas Tab -->
-        <div id="memory-tab" class="tab-content" style="display: none;">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">🔧 Memory Areas</span>
-                </div>
-                <div class="memory-section">
-                    <div class="memory-block">
-                        <div class="memory-title">Inputs (I) - 256 bytes</div>
-                        <div class="memory-hex" id="inputsHex"></div>
-                    </div>
-                    <div class="memory-block">
-                        <div class="memory-title">Outputs (Q) - 256 bytes</div>
-                        <div class="memory-hex" id="outputsHex"></div>
-                    </div>
-                    <div class="memory-block">
-                        <div class="memory-title">Flags (M) - 1024 bytes</div>
-                        <div class="memory-hex" id="flagsHex"></div>
-                    </div>
-                </div>
+
+        <!-- Welcome tab -->
+        <div class="tab-content active" id="tab-welcome">
+            <div class="empty-state">
+                <div class="icon">🏭</div>
+                <div class="text">S7 PLC 变量监控与观察</div>
+                <div class="hint" onclick="addAllToWatch()">← 从左侧选择数据块，或点击此处添加所有变量到监控表</div>
             </div>
         </div>
     </div>
-    
-    <!-- Create DB Modal -->
-    <div class="modal" id="createModal">
-        <div class="modal-content">
-            <div class="modal-title">Create New Data Block</div>
-            <div class="form-group">
-                <label class="form-label">DB Number</label>
-                <input type="number" class="form-input" id="newDbNumber" min="1" max="65535">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Size (bytes)</label>
-                <input type="number" class="form-input" id="newDbSize" min="1" value="256">
-            </div>
-            <div class="modal-actions">
-                <button class="btn" onclick="closeCreateModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="createDb()">Create</button>
-            </div>
+</div>
+
+<!-- Status Bar -->
+<div class="statusbar">
+    <div class="statusbar-item">PLC: <strong id="sbPlc">S7-1500</strong></div>
+    <div class="statusbar-item">DB: <strong id="sbDbCount">0</strong></div>
+    <div class="statusbar-item">监控: <strong id="sbWatchCount">0</strong> 变量</div>
+    <div class="statusbar-right">
+        <div class="statusbar-item" id="sbCycle">周期: —</div>
+        <div class="statusbar-item" id="sbTime">—</div>
+    </div>
+</div>
+
+<!-- Context Menu -->
+<div class="context-menu" id="contextMenu">
+    <div class="ctx-item" onclick="ctxModify()">✏️ 修改值 <span class="shortcut">F2</span></div>
+    <div class="ctx-item" onclick="ctxFormatDec()">1️⃣ 十进制</div>
+    <div class="ctx-item" onclick="ctxFormatHex()">0x 十六进制</div>
+    <div class="ctx-item" onclick="ctxFormatBin()">0b 二进制</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxCopyValue()">📋 复制值 <span class="shortcut">Ctrl+C</span></div>
+    <div class="ctx-item" onclick="ctxCopyAddress()">📋 复制地址</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="ctxRemoveFromWatch()">🗑 从监控表移除</div>
+</div>
+
+<!-- Create DB Dialog -->
+<div class="dialog-overlay" id="createDbDialog">
+    <div class="dialog">
+        <div class="dialog-header">新建数据块</div>
+        <div class="dialog-body">
+            <div class="dialog-row"><label>DB 号:</label><input type="number" id="newDbNum" min="1" max="65535"></div>
+            <div class="dialog-row"><label>大小 (字节):</label><input type="number" id="newDbSize" min="1" value="256"></div>
+        </div>
+        <div class="dialog-footer">
+            <button class="dialog-btn" onclick="closeDialog('createDbDialog')">取消</button>
+            <button class="dialog-btn primary" onclick="createNewDb()">创建</button>
         </div>
     </div>
-    
-    <!-- Toast -->
-    <div class="toast" id="toast"></div>
-    
-    <script>
-        let currentDb = null;
-        
-        // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadDbs();
-            
-            // Tab switching
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.addEventListener('click', () => {
-                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                    tab.classList.add('active');
-                    
-                    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
-                    document.getElementById(tab.dataset.tab + '-tab').style.display = 'block';
-                    
-                    if (tab.dataset.tab === 'memory') {
-                        loadMemory();
+</div>
+
+<!-- Modify Value Dialog -->
+<div class="dialog-overlay" id="modifyDialog">
+    <div class="dialog">
+        <div class="dialog-header" id="modifyTitle">修改变量值</div>
+        <div class="dialog-body">
+            <div class="dialog-row"><label>地址:</label><input type="text" id="modifyAddr" readonly style="opacity:.6"></div>
+            <div class="dialog-row"><label>类型:</label><input type="text" id="modifyType" readonly style="opacity:.6"></div>
+            <div class="dialog-row"><label>当前值:</label><input type="text" id="modifyCurrent" readonly style="opacity:.6"></div>
+            <div class="dialog-row"><label>新值:</label><input type="text" id="modifyNewVal"></div>
+        </div>
+        <div class="dialog-footer">
+            <button class="dialog-btn" onclick="closeDialog('modifyDialog')">取消</button>
+            <button class="dialog-btn primary" onclick="submitModify()">写入</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════
+let dbCache = {};           // dbNumber -> { info, variables }
+let watchList = [];         // [{ db, varName, offset, type, format, lastValue }]
+let monitorOn = true;
+let modifyMode = false;
+let refreshMs = 500;
+let refreshTimer = null;
+let selectedDb = null;
+let selectedVar = null;     // index in watchList
+let openTabs = {};          // tabId -> { type, dbNumber }
+
+// ═══════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadDbList();
+    buildSidebar();
+    startRefresh();
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', e => {
+        if (e.key === 'F2' && selectedVar !== null) { e.preventDefault(); ctxModify(); }
+        if (e.key === 'Escape') { closeAllMenus(); closeDialog('modifyDialog'); }
+        if (e.key === 'Delete' && selectedVar !== null) { ctxRemoveFromWatch(); }
+    });
+
+    // Click outside to close context menu
+    document.addEventListener('click', () => { document.getElementById('contextMenu').classList.remove('show'); });
+});
+
+// ═══════════════════════════════════════════════
+//  API
+// ═══════════════════════════════════════════════
+async function api(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`API ${url}: ${res.status}`);
+    return res.json();
+}
+
+async function apiPost(url, body) {
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    return res.json();
+}
+
+async function loadDbList() {
+    const data = await api('/api/dbs');
+    document.getElementById('sbDbCount').textContent = data.count;
+    // Load each DB's details
+    for (const db of data.data_blocks) {
+        try {
+            const detail = await api(`/api/db/${db.number}`);
+            dbCache[db.number] = detail;
+        } catch (e) { console.warn('Failed to load DB' + db.number); }
+    }
+}
+
+// ═══════════════════════════════════════════════
+//  Sidebar Tree
+// ═══════════════════════════════════════════════
+function buildSidebar(filter = '') {
+    const tree = document.getElementById('sidebarTree');
+    tree.innerHTML = '';
+    const fl = filter.toLowerCase();
+
+    // Memory areas section
+    const memSection = el('div', 'tree-section', '内存区域');
+    tree.appendChild(memSection);
+    [['inputs','I 输入'],['outputs','Q 输出'],['flags','M 标志']].forEach(([key, label]) => {
+        const node = el('div', 'tree-node' + (fl && !label.toLowerCase().includes(fl) ? ' hidden' : ''));
+        node.innerHTML = `<span class="node-icon">📏</span><span class="node-label">${label}</span>`;
+        node.onclick = () => openMemoryTab(key, label);
+        tree.appendChild(node);
+    });
+
+    // Data blocks section
+    const dbSection = el('div', 'tree-section', '数据块 (DB)');
+    tree.appendChild(dbSection);
+
+    const dbNums = Object.keys(dbCache).map(Number).sort((a,b) => a - b);
+    for (const num of dbNums) {
+        const db = dbCache[num];
+        const desc = db.description || '';
+        if (fl && !(`db${num}`.includes(fl) || desc.toLowerCase().includes(fl))) {
+            // Check variables
+            const hasVar = db.variables && db.variables.some(v => v.name.toLowerCase().includes(fl));
+            if (!hasVar) continue;
+        }
+
+        const dbNode = el('div', 'tree-node' + (selectedDb === num ? ' selected' : ''));
+        dbNode.innerHTML = `<span class="node-icon">📦</span><span class="node-label">DB${num}</span><span class="node-badge">${db.size}B</span>`;
+        dbNode.onclick = () => { selectedDb = num; buildSidebar(document.getElementById('searchInput').value); };
+        dbNode.ondblclick = () => openDbWatchTab(num);
+        tree.appendChild(dbNode);
+
+        if (selectedDb === num && db.variables) {
+            for (const v of db.variables) {
+                if (fl && !v.name.toLowerCase().includes(fl)) continue;
+                const vnode = el('div', 'tree-node indent');
+                const icon = typeIcon(v.data_type || v.type);
+                vnode.innerHTML = `<span class="node-icon">${icon}</span><span class="node-label">${v.name}</span>`;
+                vnode.onclick = (e) => { e.stopPropagation(); addToWatch(num, v); };
+                tree.appendChild(vnode);
+            }
+        }
+    }
+}
+
+function filterTree(val) { buildSidebar(val); }
+
+function typeIcon(type) {
+    const t = (type || '').toUpperCase();
+    if (t === 'BOOL') return '🔘';
+    if (t === 'REAL') return '📐';
+    if (t === 'STRING') return '🔤';
+    if (t === 'DT') return '🕐';
+    if (['INT','DINT','WORD','DWORD','BYTE'].includes(t)) return '🔢';
+    return '📊';
+}
+
+// ═══════════════════════════════════════════════
+//  Tabs
+// ═══════════════════════════════════════════════
+function switchTab(tabId) {
+    document.querySelectorAll('.tab-item').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tabId));
+}
+
+function openDbWatchTab(dbNum) {
+    const tabId = 'db' + dbNum;
+    if (openTabs[tabId]) { switchTab(tabId); return; }
+
+    // Add all vars from this DB to watch
+    const db = dbCache[dbNum];
+    if (db && db.variables) {
+        db.variables.forEach(v => addToWatch(dbNum, v));
+    }
+
+    // Create tab
+    const tabItem = el('div', 'tab-item');
+    tabItem.dataset.tab = tabId;
+    tabItem.innerHTML = `<span class="tab-icon">👁</span> DB${db} <span class="tab-close" onclick="event.stopPropagation();closeTab('${tabId}')">×</span>`;
+    tabItem.onclick = () => switchTab(tabId);
+    document.getElementById('tabBar').appendChild(tabItem);
+
+    const content = el('div', 'tab-content');
+    content.id = 'tab-' + tabId;
+    content.innerHTML = `<div class="watch-container"><table class="watch-table"><thead><tr>
+        <th class="col-name">名称</th><th class="col-address">地址</th><th class="col-format">格式</th>
+        <th class="col-value">值</th><th class="col-hex">原始数据</th><th class="col-quality">质量</th><th class="col-comment">注释</th>
+    </tr></thead><tbody id="watch-${tabId}"></tbody></table></div>`;
+    document.querySelector('.content').appendChild(content);
+
+    openTabs[tabId] = { type: 'db', dbNumber: dbNum };
+    switchTab(tabId);
+    renderWatchTable();
+}
+
+function openMemoryTab(key, label) {
+    const tabId = 'mem-' + key;
+    if (openTabs[tabId]) { switchTab(tabId); return; }
+
+    const tabItem = el('div', 'tab-item');
+    tabItem.dataset.tab = tabId;
+    tabItem.innerHTML = `<span class="tab-icon">📏</span> ${label} <span class="tab-close" onclick="event.stopPropagation();closeTab('${tabId}')">×</span>`;
+    tabItem.onclick = () => switchTab(tabId);
+    document.getElementById('tabBar').appendChild(tabItem);
+
+    const content = el('div', 'tab-content');
+    content.id = 'tab-' + tabId;
+    content.innerHTML = `<div class="hex-viewer" id="hex-${tabId}"></div>`;
+    document.querySelector('.content').appendChild(content);
+
+    openTabs[tabId] = { type: 'memory', key };
+    switchTab(tabId);
+    loadMemoryHex(key, tabId);
+}
+
+function closeTab(tabId) {
+    const tabItem = document.querySelector(`.tab-item[data-tab="${tabId}"]`);
+    const content = document.getElementById('tab-' + tabId);
+    if (tabItem) tabItem.remove();
+    if (content) content.remove();
+    delete openTabs[tabId];
+
+    // Switch to welcome if nothing left
+    const remaining = document.querySelectorAll('.tab-item');
+    if (remaining.length === 0 || !document.querySelector('.tab-item.active')) {
+        const welcomeTab = document.querySelector('.tab-item[data-tab="welcome"]');
+        if (welcomeTab) switchTab('welcome');
+    }
+}
+
+// ═══════════════════════════════════════════════
+//  Watch List
+// ═══════════════════════════════════════════════
+function addToWatch(dbNum, variable) {
+    // Check duplicate
+    const exists = watchList.find(w => w.db === dbNum && w.offset === variable.offset);
+    if (exists) return;
+
+    watchList.push({
+        db: dbNum,
+        name: variable.name,
+        offset: variable.offset,
+        type: variable.data_type || variable.type,
+        unit: variable.unit || null,
+        enum_values: variable.enum_values || null,
+        description: variable.description || '',
+        format: 'dec',
+        lastValue: null,
+        rawHex: ''
+    });
+    document.getElementById('sbWatchCount').textContent = watchList.length;
+    renderWatchTable();
+}
+
+function addSelectedToWatch() {
+    if (selectedDb && dbCache[selectedDb]) {
+        openDbWatchTab(selectedDb);
+    }
+}
+
+function addAllToWatch() {
+    for (const num of Object.keys(dbCache).map(Number).sort((a,b)=>a-b)) {
+        const db = dbCache[num];
+        if (db && db.variables) {
+            db.variables.forEach(v => addToWatch(num, v));
+        }
+    }
+    // Open a combined watch tab if not already
+    if (!openTabs['all-watch']) {
+        const tabId = 'all-watch';
+        const tabItem = el('div', 'tab-item');
+        tabItem.dataset.tab = tabId;
+        tabItem.innerHTML = `<span class="tab-icon">📋</span> 全部监控 <span class="tab-close" onclick="event.stopPropagation();closeTab('${tabId}')">×</span>`;
+        tabItem.onclick = () => switchTab(tabId);
+        document.getElementById('tabBar').appendChild(tabItem);
+
+        const content = el('div', 'tab-content');
+        content.id = 'tab-' + tabId;
+        content.innerHTML = `<div class="watch-container"><table class="watch-table"><thead><tr>
+            <th class="col-name">名称</th><th class="col-address">地址</th><th class="col-format">格式</th>
+            <th class="col-value">值</th><th class="col-hex">原始数据</th><th class="col-quality">质量</th><th class="col-comment">注释</th>
+        </tr></thead><tbody id="watch-all-watch"></tbody></table></div>`;
+        document.querySelector('.content').appendChild(content);
+
+        openTabs[tabId] = { type: 'all-watch' };
+        switchTab(tabId);
+    }
+    renderWatchTable();
+}
+
+function clearWatch() {
+    watchList = [];
+    document.getElementById('sbWatchCount').textContent = 0;
+    renderWatchTable();
+}
+
+// ═══════════════════════════════════════════════
+//  Watch Table Rendering
+// ═══════════════════════════════════════════════
+function renderWatchTable() {
+    // Find the active tab's tbody
+    const activeTab = document.querySelector('.tab-item.active');
+    if (!activeTab) return;
+    const tabId = activeTab.dataset.tab;
+    const tbody = document.getElementById('watch-' + tabId);
+    if (!tbody) return;
+
+    // Determine which vars to show
+    const tabInfo = openTabs[tabId];
+    let items = watchList;
+    if (tabInfo && tabInfo.type === 'db') {
+        items = watchList.filter(w => w.db === tabInfo.dbNumber);
+    }
+
+    // Group by DB
+    const groups = {};
+    items.forEach((w, i) => {
+        if (!groups[w.db]) groups[w.db] = [];
+        groups[w.db].push({ ...w, _idx: i });
+    });
+
+    let html = '';
+    for (const [dbNum, vars] of Object.entries(groups)) {
+        const dbDesc = dbCache[Number(dbNum)]?.description || '';
+        html += `<tr class="group-header"><td colspan="7">📦 DB${dbNum}${dbDesc ? ' — ' + dbDesc : ''}</td></tr>`;
+        for (const v of vars) {
+            const addr = s7Address(dbNum, v.type, v.offset);
+            const valStr = formatWatchValue(v);
+            const hexStr = v.rawHex || '—';
+            const quality = v.lastValue !== null ? 'good' : 'bad';
+            const sel = selectedVar === v._idx ? ' selected' : '';
+
+            html += `<tr class="${sel}" data-idx="${v._idx}" oncontextmenu="showContextMenu(event, ${v._idx})" onclick="selectWatchRow(${v._idx})">
+                <td class="cell-name">${v.name}</td>
+                <td class="cell-address">${addr}</td>
+                <td class="cell-format">${formatSelect(v.format, v._idx)}</td>
+                <td class="cell-value" data-type="${v.type}" data-idx="${v._idx}">${valStr}</td>
+                <td class="cell-hex">${hexStr}</td>
+                <td class="cell-quality"><span class="quality-dot ${quality === 'bad' ? 'bad' : ''}"></span><span class="quality-label ${quality === 'bad' ? 'bad' : ''}">${quality === 'good' ? 'OK' : '?'}</span></td>
+                <td class="cell-comment">${v.description || ''}</td>
+            </tr>`;
+        }
+    }
+
+    if (items.length === 0) {
+        html = '<tr><td colspan="7" style="text-align:center;color:var(--tia-text-dim);padding:40px">监控表为空 — 从左侧树添加变量</td></tr>';
+    }
+
+    tbody.innerHTML = html;
+}
+
+function formatSelect(current, idx) {
+    return `<select onchange="changeFormat(${idx}, this.value)">
+        <option value="dec" ${current==='dec'?'selected':''}>DEC</option>
+        <option value="hex" ${current==='hex'?'selected':''}>HEX</option>
+        <option value="bin" ${current==='bin'?'selected':''}>BIN</option>
+        <option value="float" ${current==='float'?'selected':''}>FLT</option>
+    </select>`;
+}
+
+function s7Address(dbNum, type, offset) {
+    const t = (type || '').toUpperCase();
+    if (t === 'BOOL') return `DB${dbNum}.DBX${offset}.0`;
+    if (t === 'BYTE') return `DB${dbNum}.DBB${offset}`;
+    if (t === 'WORD') return `DB${dbNum}.DBW${offset}`;
+    if (t === 'DWORD') return `DB${dbNum}.DBD${offset}`;
+    if (t === 'INT') return `DB${dbNum}.DBW${offset}`;
+    if (t === 'DINT') return `DB${dbNum}.DBD${offset}`;
+    if (t === 'REAL') return `DB${dbNum}.DBD${offset}`;
+    if (t === 'STRING') return `DB${dbNum}.DBB${offset}`;
+    if (t === 'DT') return `DB${dbNum}.DBD${offset}`;
+    return `DB${dbNum}.+${offset}`;
+}
+
+function formatWatchValue(w) {
+    if (w.lastValue === null || w.lastValue === undefined) return '<span style="color:var(--tia-text-dim)">—</span>';
+
+    const v = w.lastValue;
+    const fmt = w.format;
+
+    let display = '';
+    const type = (w.type || '').toUpperCase();
+
+    if (type === 'BOOL') {
+        display = v ? 'TRUE' : 'FALSE';
+        if (fmt === 'hex') display = v ? '01H' : '00H';
+        if (fmt === 'bin') display = v ? '1' : '0';
+    } else if (type === 'REAL') {
+        const num = typeof v === 'number' ? v : parseFloat(v);
+        if (fmt === 'hex' && w.rawHex) display = w.rawHex;
+        else if (fmt === 'bin' && w.rawHex) display = hexToBin(w.rawHex);
+        else display = num.toFixed(2);
+    } else if (type === 'STRING') {
+        display = `"${v}"`;
+    } else if (type === 'DT') {
+        display = String(v);
+    } else {
+        // Integer types
+        const num = typeof v === 'number' ? v : parseInt(v);
+        if (fmt === 'hex') display = '0x' + (num >>> 0).toString(16).toUpperCase().padStart(type.includes('D') ? 8 : 4, '0');
+        else if (fmt === 'bin') display = (num >>> 0).toString(2).padStart(type.includes('D') ? 32 : 16, '0');
+        else if (fmt === 'float') display = num.toFixed(1);
+        else display = String(num);
+    }
+
+    // Add enum tag
+    let extra = '';
+    if (w.enum_values && v !== null) {
+        const key = String(typeof v === 'object' ? v : v);
+        if (w.enum_values[key]) {
+            extra += `<span class="enum-tag">${w.enum_values[key]}</span>`;
+        }
+    }
+    if (w.unit && fmt === 'dec') {
+        extra += `<span class="unit-tag">${w.unit}</span>`;
+    }
+
+    return display + extra;
+}
+
+function hexToBin(hex) {
+    return hex.replace(/\s/g,'').split('').reduce((acc, c) => acc + parseInt(c, 16).toString(2).padStart(4, '0'), '');
+}
+
+function changeFormat(idx, fmt) {
+    if (watchList[idx]) { watchList[idx].format = fmt; renderWatchTable(); }
+}
+
+function selectWatchRow(idx) {
+    selectedVar = idx;
+    renderWatchTable();
+}
+
+// ═══════════════════════════════════════════════
+//  Refresh / Monitor
+// ═══════════════════════════════════════════════
+function toggleMonitor() {
+    monitorOn = !monitorOn;
+    document.getElementById('btnMonitor').classList.toggle('active', monitorOn);
+    if (monitorOn) startRefresh(); else stopRefresh();
+}
+
+function toggleModify() {
+    modifyMode = !modifyMode;
+    document.getElementById('btnModify').classList.toggle('active', modifyMode);
+}
+
+function setRefreshRate(ms) {
+    refreshMs = parseInt(ms);
+    stopRefresh();
+    if (refreshMs > 0) startRefresh();
+}
+
+function startRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (refreshMs <= 0) return;
+    refreshTimer = setInterval(refreshValues, refreshMs);
+}
+
+function stopRefresh() {
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+function forceRefresh() { refreshValues(); }
+
+async function refreshValues() {
+    if (!monitorOn || watchList.length === 0) return;
+
+    const t0 = performance.now();
+    const dbNums = [...new Set(watchList.map(w => w.db))];
+
+    for (const dbNum of dbNums) {
+        try {
+            const data = await api(`/api/db/${dbNum}`);
+            if (data.variables) {
+                for (const v of data.variables) {
+                    const wItem = watchList.find(w => w.db === dbNum && w.offset === v.offset);
+                    if (wItem) {
+                        const oldVal = wItem.lastValue;
+                        wItem.lastValue = v.value;
+                        wItem.rawHex = v.raw_hex || '';
+                        // Mark changed
+                        if (oldVal !== null && oldVal !== v.value) {
+                            wItem._changed = true;
+                            setTimeout(() => { wItem._changed = false; renderWatchTable(); }, 800);
+                        }
                     }
-                });
-            });
-        });
-        
-        // Load data blocks
-        async function loadDbs() {
-            try {
-                const res = await fetch('/api/dbs');
-                const data = await res.json();
-                
-                document.getElementById('dbCount').textContent = data.count;
-                
-                const list = document.getElementById('dbList');
-                list.innerHTML = '';
-                
-                data.data_blocks.forEach(db => {
-                    const item = document.createElement('div');
-                    item.className = 'db-item' + (currentDb === db.number ? ' selected' : '');
-                    item.innerHTML = `
-                        <div class="db-number">DB${db.number}</div>
-                        <div class="db-size">${db.size} bytes</div>
-                    `;
-                    item.onclick = () => selectDb(db.number);
-                    list.appendChild(item);
-                });
-            } catch (e) {
-                showToast('Failed to load DBs', true);
-            }
-        }
-        
-        // Select DB
-        async function selectDb(number) {
-            currentDb = number;
-            
-            // Update UI
-            document.querySelectorAll('.db-item').forEach(item => {
-                item.classList.remove('selected');
-            });
-            event.target.closest('.db-item').classList.add('selected');
-            
-            document.getElementById('currentDb').textContent = number;
-            document.getElementById('dbViewer').classList.add('active');
-            
-            // Load DB content
-            try {
-                const res = await fetch(`/api/db/${number}`);
-                const data = await res.json();
-                
-                const tbody = document.getElementById('dbContent');
-                tbody.innerHTML = '';
-                
-                data.data.forEach(row => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>0x${row.offset.toString(16).toUpperCase().padStart(4, '0')}</td>
-                        <td class="hex-view">${row.hex}</td>
-                        <td>${row.bytes.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}</td>
-                        <td class="int-view">${row.as_int ?? '-'}</td>
-                        <td class="real-view">${row.as_real?.toFixed(4) ?? '-'}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-            } catch (e) {
-                showToast('Failed to load DB content', true);
-            }
-        }
-        
-        // Close viewer
-        function closeViewer() {
-            document.getElementById('dbViewer').classList.remove('active');
-            currentDb = null;
-            loadDbs();
-        }
-        
-        // Show create modal
-        function showCreateModal() {
-            document.getElementById('createModal').classList.add('active');
-            document.getElementById('newDbNumber').value = '';
-            document.getElementById('newDbSize').value = '256';
-        }
-        
-        // Close create modal
-        function closeCreateModal() {
-            document.getElementById('createModal').classList.remove('active');
-        }
-        
-        // Create DB
-        async function createDb() {
-            const number = parseInt(document.getElementById('newDbNumber').value);
-            const size = parseInt(document.getElementById('newDbSize').value);
-            
-            if (!number || !size) {
-                showToast('Please fill all fields', true);
-                return;
-            }
-            
-            try {
-                const res = await fetch('/api/db', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ number, size })
-                });
-                
-                if (res.ok) {
-                    showToast(`DB${number} created`);
-                    closeCreateModal();
-                    loadDbs();
-                } else {
-                    showToast('Failed to create DB', true);
-                }
-            } catch (e) {
-                showToast('Failed to create DB', true);
-            }
-        }
-        
-        // Clear DB
-        async function clearDb() {
-            if (!currentDb) return;
-            
-            if (!confirm(`Clear all data in DB${currentDb}?`)) return;
-            
-            try {
-                const res = await fetch(`/api/db/${currentDb}/clear`, { method: 'POST' });
-                if (res.ok) {
-                    showToast(`DB${currentDb} cleared`);
-                    selectDb(currentDb);
-                }
-            } catch (e) {
-                showToast('Failed to clear DB', true);
-            }
-        }
-        
-        // Show write form
-        function showWriteModal() {
-            const form = document.getElementById('writeForm');
-            form.style.display = form.style.display === 'none' ? 'flex' : 'none';
-        }
-        
-        // Write value
-        async function writeValue() {
-            if (!currentDb) return;
-            
-            const offset = parseInt(document.getElementById('writeOffset').value);
-            const type = document.getElementById('writeType').value;
-            const value = document.getElementById('writeValue').value;
-            
-            if (isNaN(offset) || !value) {
-                showToast('Please fill all fields', true);
-                return;
-            }
-            
-            try {
-                const res = await fetch(`/api/db/${currentDb}/write`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ offset, value, data_type: type })
-                });
-                
-                if (res.ok) {
-                    showToast('Value written');
-                    selectDb(currentDb);
-                } else {
-                    showToast('Write failed', true);
-                }
-            } catch (e) {
-                showToast('Write failed', true);
-            }
-        }
-        
-        // Load memory areas
-        async function loadMemory() {
-            const areas = ['inputs', 'outputs', 'flags'];
-            for (const area of areas) {
-                try {
-                    const res = await fetch(`/api/memory/${area}`);
-                    const data = await res.json();
-                    document.getElementById(area + 'Hex').textContent = data.hex;
-                } catch (e) {
-                    console.error('Failed to load', area);
                 }
             }
+        } catch (e) { console.warn('Refresh DB' + dbNum + ' failed'); }
+    }
+
+    const elapsed = (performance.now() - t0).toFixed(0);
+    document.getElementById('sbCycle').textContent = `周期: ${elapsed}ms`;
+    document.getElementById('titleCycle').textContent = `${elapsed}ms`;
+    document.getElementById('sbTime').textContent = new Date().toLocaleTimeString('zh-CN');
+
+    renderWatchTable();
+}
+
+// ═══════════════════════════════════════════════
+//  Memory Hex View
+// ═══════════════════════════════════════════════
+async function loadMemoryHex(key, tabId) {
+    try {
+        const data = await api(`/api/memory/${key}`);
+        const bytes = hexToBytes(data.hex);
+        renderHexView(bytes, 'hex-' + tabId);
+    } catch (e) { console.error(e); }
+}
+
+function hexToBytes(hex) {
+    const bytes = [];
+    for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+    return bytes;
+}
+
+function renderHexView(bytes, containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    const cols = 16;
+    let html = '<table class="hex-table"><thead><tr><th>偏移</th>';
+    for (let c = 0; c < cols; c++) html += `<th>${c.toString(16).toUpperCase().padStart(2, '0')}</th>`;
+    html += '</tr></thead><tbody>';
+
+    for (let i = 0; i < bytes.length; i += cols) {
+        html += `<tr><td>${i.toString(16).toUpperCase().padStart(4, '0')}</td>`;
+        for (let c = 0; c < cols; c++) {
+            const b = bytes[i + c];
+            html += `<td>${b !== undefined ? b.toString(16).toUpperCase().padStart(2, '0') : ''}</td>`;
         }
-        
-        // Toast
-        function showToast(message, isError = false) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.className = 'toast' + (isError ? ' error' : '');
-            toast.classList.add('show');
-            
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
-        }
-    </script>
+        html += '</tr>';
+    }
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════
+//  Context Menu
+// ═══════════════════════════════════════════════
+function showContextMenu(e, idx) {
+    e.preventDefault();
+    selectedVar = idx;
+    const menu = document.getElementById('contextMenu');
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    menu.classList.add('show');
+    e.stopPropagation();
+}
+
+function closeAllMenus() {
+    document.getElementById('contextMenu').classList.remove('show');
+}
+
+function ctxModify() {
+    closeAllMenus();
+    if (selectedVar === null) return;
+    const w = watchList[selectedVar];
+    if (!w) return;
+
+    document.getElementById('modifyAddr').value = s7Address(w.db, w.type, w.offset);
+    document.getElementById('modifyType').value = w.type;
+    document.getElementById('modifyCurrent').value = w.lastValue ?? '';
+    document.getElementById('modifyNewVal').value = '';
+    document.getElementById('modifyTitle').textContent = `修改 ${w.name} (DB${w.db})`;
+    document.getElementById('modifyDialog').classList.add('show');
+    setTimeout(() => document.getElementById('modifyNewVal').focus(), 100);
+}
+
+async function submitModify() {
+    if (selectedVar === null) return;
+    const w = watchList[selectedVar];
+    const newVal = document.getElementById('modifyNewVal').value.trim();
+    if (!newVal) return;
+
+    const typeMap = { BOOL: 'byte', BYTE: 'byte', WORD: 'word', DWORD: 'dword', INT: 'int', DINT: 'dword', REAL: 'real', STRING: 'string' };
+    const apiType = typeMap[w.type] || 'hex';
+
+    try {
+        await apiPost(`/api/db/${w.db}/write`, { offset: w.offset, value: newVal, data_type: apiType });
+        closeDialog('modifyDialog');
+        await refreshValues();
+    } catch (e) {
+        alert('写入失败: ' + e.message);
+    }
+}
+
+function ctxFormatDec() { closeAllMenus(); if (selectedVar !== null) { watchList[selectedVar].format = 'dec'; renderWatchTable(); } }
+function ctxFormatHex() { closeAllMenus(); if (selectedVar !== null) { watchList[selectedVar].format = 'hex'; renderWatchTable(); } }
+function ctxFormatBin() { closeAllMenus(); if (selectedVar !== null) { watchList[selectedVar].format = 'bin'; renderWatchTable(); } }
+
+function ctxCopyValue() {
+    closeAllMenus();
+    if (selectedVar !== null && watchList[selectedVar].lastValue !== null) {
+        navigator.clipboard.writeText(String(watchList[selectedVar].lastValue));
+    }
+}
+
+function ctxCopyAddress() {
+    closeAllMenus();
+    if (selectedVar !== null) {
+        navigator.clipboard.writeText(s7Address(watchList[selectedVar].db, watchList[selectedVar].type, watchList[selectedVar].offset));
+    }
+}
+
+function ctxRemoveFromWatch() {
+    closeAllMenus();
+    if (selectedVar !== null) {
+        watchList.splice(selectedVar, 1);
+        selectedVar = null;
+        document.getElementById('sbWatchCount').textContent = watchList.length;
+        renderWatchTable();
+    }
+}
+
+// ═══════════════════════════════════════════════
+//  Create DB Dialog
+// ═══════════════════════════════════════════════
+function showCreateDbDialog() { document.getElementById('createDbDialog').classList.add('show'); }
+
+async function createNewDb() {
+    const num = parseInt(document.getElementById('newDbNum').value);
+    const size = parseInt(document.getElementById('newDbSize').value);
+    if (!num || !size) return;
+
+    try {
+        await apiPost('/api/db', { number: num, size });
+        closeDialog('createDbDialog');
+        await loadDbList();
+        buildSidebar();
+    } catch (e) { alert('创建失败: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════════
+//  Utilities
+// ═══════════════════════════════════════════════
+function el(tag, className, text) {
+    const e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text) e.textContent = text;
+    return e;
+}
+
+function closeDialog(id) { document.getElementById(id).classList.remove('show'); }
+
+// Fix DINT address in s7Address (was using undefined dbNumber)
+// Already fixed inline above by using dbNum parameter
+</script>
 </body>
 </html>

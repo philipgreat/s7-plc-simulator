@@ -1,0 +1,369 @@
+{
+  "plc": {
+    "type": "S7-1500",
+    "rack": 0,
+    "slot": 1
+  },
+  "memory": {
+    "inputs": {
+      "size": 256
+    },
+    "outputs": {
+      "size": 256
+    },
+    "flags": {
+      "size": 1024
+    }
+  },
+  "data_blocks": [
+    {
+      "number": 1,
+      "size": 256,
+      "description": "System Data Block",
+      "variables": [
+        {
+          "name": "system_status",
+          "offset": 0,
+          "type": "WORD",
+          "value": 1,
+          "description": "系统状态: 0=停止, 1=运行, 2=暂停, 3=错误"
+        },
+        {
+          "name": "heartbeat",
+          "offset": 2,
+          "type": "DWORD",
+          "value": 0,
+          "description": "心跳计数器"
+        }
+      ]
+    },
+    {
+      "number": 10,
+      "size": 64,
+      "description": "Real Values Test",
+      "variables": [
+        {
+          "name": "temperature",
+          "offset": 0,
+          "type": "REAL",
+          "value": 22.5,
+          "unit": "℃",
+          "description": "温度"
+        },
+        {
+          "name": "pressure",
+          "offset": 4,
+          "type": "REAL",
+          "value": 3.1,
+          "unit": "bar",
+          "description": "压力"
+        },
+        {
+          "name": "flow_rate",
+          "offset": 8,
+          "type": "REAL",
+          "value": 42.8,
+          "unit": "L/min",
+          "description": "流量"
+        },
+        {
+          "name": "volume",
+          "offset": 12,
+          "type": "REAL",
+          "value": 362.5,
+          "unit": "L",
+          "description": "体积"
+        }
+      ]
+    },
+    {
+      "number": 11,
+      "size": 32,
+      "description": "Integer Values Test",
+      "variables": [
+        {
+          "name": "count1",
+          "offset": 0,
+          "type": "INT",
+          "value": 100,
+          "description": "计数器1"
+        },
+        {
+          "name": "count2",
+          "offset": 2,
+          "type": "INT",
+          "value": -200,
+          "description": "计数器2"
+        },
+        {
+          "name": "setpoint",
+          "offset": 4,
+          "type": "DINT",
+          "value": 50000,
+          "description": "设定值"
+        }
+      ]
+    },
+    {
+      "number": 20,
+      "size": 128,
+      "description": "String Test",
+      "variables": [
+        {
+          "name": "product_name",
+          "offset": 0,
+          "type": "STRING",
+          "max_length": 50,
+          "value": "Filling Product A",
+          "description": "产品名称"
+        },
+        {
+          "name": "batch_code",
+          "offset": 56,
+          "type": "STRING",
+          "max_length": 20,
+          "value": "BATCH-2026-001",
+          "description": "批次号"
+        }
+      ]
+    },
+    {
+      "number": 100,
+      "size": 256,
+      "description": "Filling Station Status (灌装站状态)",
+      "variables": [
+        {
+          "name": "status",
+          "offset": 0,
+          "type": "DWORD",
+          "value": 1,
+          "enum_values": {
+            "0": "IDLE",
+            "1": "RUNNING",
+            "2": "PAUSED",
+            "3": "COMPLETED",
+            "4": "ERROR"
+          },
+          "description": "状态: 0=空闲, 1=运行中, 2=暂停, 3=完成, 4=错误"
+        },
+        {
+          "name": "task_id",
+          "offset": 4,
+          "type": "DWORD",
+          "value": 12345,
+          "description": "任务ID"
+        },
+        {
+          "name": "progress",
+          "offset": 8,
+          "type": "REAL",
+          "value": 65.5,
+          "unit": "%",
+          "description": "进度百分比"
+        },
+        {
+          "name": "volume_dispensed",
+          "offset": 12,
+          "type": "REAL",
+          "value": 327.5,
+          "unit": "L",
+          "description": "已灌装量"
+        },
+        {
+          "name": "target_volume",
+          "offset": 16,
+          "type": "REAL",
+          "value": 500.0,
+          "unit": "L",
+          "description": "目标灌装量"
+        },
+        {
+          "name": "flow_rate",
+          "offset": 20,
+          "type": "REAL",
+          "value": 45.2,
+          "unit": "L/min",
+          "description": "瞬时流量"
+        },
+        {
+          "name": "pressure",
+          "offset": 24,
+          "type": "REAL",
+          "value": 2.8,
+          "unit": "bar",
+          "description": "压力"
+        },
+        {
+          "name": "temperature",
+          "offset": 28,
+          "type": "REAL",
+          "value": 22.5,
+          "unit": "℃",
+          "description": "温度"
+        },
+        {
+          "name": "fill_station_id",
+          "offset": 32,
+          "type": "DWORD",
+          "value": 1,
+          "description": "工位ID"
+        },
+        {
+          "name": "start_time",
+          "offset": 36,
+          "type": "DWORD",
+          "value": 0,
+          "description": "开始时间戳 (Unix seconds)"
+        },
+        {
+          "name": "end_time",
+          "offset": 40,
+          "type": "DWORD",
+          "value": 0,
+          "description": "结束时间戳 (Unix seconds)"
+        },
+        {
+          "name": "error_code",
+          "offset": 44,
+          "type": "BYTE",
+          "value": 0,
+          "description": "错误码: 0=无错误"
+        }
+      ]
+    },
+    {
+      "number": 401,
+      "size": 38,
+      "description": "Filling Station Runtime Status (灌装站运行状态)",
+      "variables": [
+        {
+          "name": "station_status",
+          "offset": 0,
+          "type": "DWORD",
+          "value": 1,
+          "enum_values": {
+            "0": "IDLE",
+            "1": "RUNNING",
+            "2": "PAUSED",
+            "3": "COMPLETED",
+            "4": "ERROR"
+          },
+          "description": "工位状态"
+        },
+        {
+          "name": "current_task_id",
+          "offset": 4,
+          "type": "DWORD",
+          "value": 67890,
+          "description": "当前任务ID"
+        },
+        {
+          "name": "fill_progress",
+          "offset": 8,
+          "type": "REAL",
+          "value": 72.5,
+          "unit": "%",
+          "description": "灌装进度"
+        },
+        {
+          "name": "current_volume",
+          "offset": 12,
+          "type": "REAL",
+          "value": 362.5,
+          "unit": "L",
+          "description": "当前已灌装量"
+        },
+        {
+          "name": "target_volume",
+          "offset": 16,
+          "type": "REAL",
+          "value": 500.0,
+          "unit": "L",
+          "description": "目标灌装量"
+        },
+        {
+          "name": "flow_rate",
+          "offset": 20,
+          "type": "REAL",
+          "value": 42.8,
+          "unit": "L/min",
+          "description": "瞬时流量"
+        },
+        {
+          "name": "pressure",
+          "offset": 24,
+          "type": "REAL",
+          "value": 3.1,
+          "unit": "bar",
+          "description": "压力"
+        },
+        {
+          "name": "temperature",
+          "offset": 28,
+          "type": "REAL",
+          "value": 23.4,
+          "unit": "℃",
+          "description": "温度"
+        },
+        {
+          "name": "elapsed_seconds",
+          "offset": 32,
+          "type": "DWORD",
+          "value": 300,
+          "unit": "s",
+          "description": "已运行秒数"
+        },
+        {
+          "name": "error_code",
+          "offset": 36,
+          "type": "BYTE",
+          "value": 0,
+          "description": "错误码"
+        }
+      ]
+    },
+    {
+      "number": 2991,
+      "size": 808,
+      "description": "Filling Station Report (灌装站报告数据)",
+      "variables": [
+        {
+          "name": "report_count",
+          "offset": 0,
+          "type": "DWORD",
+          "value": 1,
+          "description": "报告数量"
+        },
+        {
+          "name": "report_index",
+          "offset": 4,
+          "type": "DWORD",
+          "value": 0,
+          "description": "当前报告索引"
+        },
+        {
+          "name": "start_time",
+          "offset": 472,
+          "type": "DT",
+          "value": "2026-04-19T18:00:00",
+          "description": "开始时间 (S7 DateAndTime)"
+        },
+        {
+          "name": "end_time",
+          "offset": 480,
+          "type": "DT",
+          "value": "2026-04-19T18:05:00",
+          "description": "结束时间 (S7 DateAndTime)"
+        },
+        {
+          "name": "task_id",
+          "offset": 780,
+          "type": "STRING",
+          "max_length": 8,
+          "value": "TASK0001",
+          "description": "任务ID"
+        }
+      ]
+    }
+  ]
+}

@@ -5,7 +5,8 @@
 
 use clap::Parser;
 use tracing_subscriber::prelude::*;
-use s7_plc_simulator::{create_shared_memory, create_connection_list, PlcSimulator, api};
+use s7_plc_simulator::{create_shared_memory, create_shared_memory_from_config, create_connection_list, PlcSimulator, api};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "s7-plc-simulator")]
@@ -34,6 +35,10 @@ struct Cli {
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     verbose: bool,
+    
+    /// Configuration file path (JSON)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -64,8 +69,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("╚══════════════════════════════════════════════════╝");
     println!();
     
-    // Create shared memory
-    let memory = create_shared_memory();
+    // Create shared memory from config or default
+    let memory = if let Some(config_path) = &cli.config {
+        match create_shared_memory_from_config(config_path) {
+            Ok(m) => {
+                println!("📄 Loaded configuration from: {}", config_path.display());
+                m
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to load config: {}", e);
+                eprintln!("   Using default memory configuration...");
+                create_shared_memory()
+            }
+        }
+    } else {
+        create_shared_memory()
+    };
     
     // Create shared connection list
     let connections = create_connection_list();

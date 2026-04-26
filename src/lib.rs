@@ -11,7 +11,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};
 
-pub use memory::{PlcMemory, SharedMemory, create_shared_memory, MemoryArea};
+pub use memory::{PlcMemory, SharedMemory, create_shared_memory, create_shared_memory_from_config, MemoryArea, DataBlock, DataBlockData, VariableDefinition, DataBlockConfig, PlcConfig};
+
+#[cfg(test)]
+mod tests;
 
 /// Shared connection tracker
 pub type ConnectionList = Arc<RwLock<Vec<ClientConnection>>>;
@@ -303,10 +306,8 @@ impl PlcSimulator {
         Self::send_packet(&mut stream, &cotp_cc, use_tpkt).await?;
         debug!("[S7] Sent COTP CC (TPKT={})", use_tpkt);
         
-        // Send COTP DT (connection active) - same framing as CC
-        let cotp_dt: [u8; 7] = [0x02, 0xF0, 0x80, 0x00, 0x00, 0x00, 0x00];
-        Self::send_packet(&mut stream, &cotp_dt, use_tpkt).await?;
-        debug!("[S7] Sent COTP DT (TPKT={})", use_tpkt);
+        // Note: Do NOT send COTP DT here — COTP DT is only used to carry S7 PDUs.
+        // The client will send S7 Setup Communication next, and we respond in the main loop.
         
         // --- Main request loop ---
         info!("[S7] Entering main loop, use_tpkt={}, buf_start={}, buf_end={}", use_tpkt, buf_start, buf_end);
@@ -559,7 +560,7 @@ impl PlcSimulator {
     }
     
     /// Handle S7 request
-    async fn handle_request(&self, pdu_type: u8, pdu_ref: u16, param_data: &[u8], conn_id: usize) -> Option<Vec<u8>> {
+    pub(crate) async fn handle_request(&self, pdu_type: u8, pdu_ref: u16, param_data: &[u8], conn_id: usize) -> Option<Vec<u8>> {
         match pdu_type {
             0x01 => { // Job
                 if param_data.len() < 1 {
@@ -598,7 +599,7 @@ impl PlcSimulator {
     }
     
     /// Build setup communication response
-    fn build_setup_response(&self, pdu_ref: u16) -> Vec<u8> {
+    pub(crate) fn build_setup_response(&self, pdu_ref: u16) -> Vec<u8> {
         vec![
             PROTOCOL_ID, PduType::AckData as u8, 0x00, 0x00,
             (pdu_ref >> 8) as u8, (pdu_ref & 0xFF) as u8,
@@ -612,13 +613,14 @@ impl PlcSimulator {
     }
     
     /// Handle read request (S7 standard response format)
+    #[allow(dead_code)]
     /// 
     /// Request param_data: [function_code(0x04), item_count, item_spec...]
     /// 
     /// Response format (S7 standard):
     ///   Param section: [function_code(0x04), item_count] (2 bytes)
     ///   Data section (per item): [return_code, transport_size, data_len_hi, data_len_lo, actual_data...]
-    async fn handle_read_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) async fn handle_read_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
         if param_data.len() < 2 {
             return None;
         }
@@ -638,7 +640,10 @@ impl PlcSimulator {
             let spec_type = param_data[offset];
             let spec_len = param_data[offset + 1] as usize;
             
-            if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
+            // S7 Read Var item spec: 0x12 | spec_len(0x0A=10) | syntax_id(0x10) |
+            //   transport_size(1) | num_elements(2) | db_number(2) | area_code(1) | offset(3)
+            // Total spec data after 0x12+spec_len = 10 bytes
+            if spec_type != 0x12 || spec_len < 10 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
                 // Push error item in data section
                 data_results.push(0x0A); // Error: data not available
@@ -652,7 +657,12 @@ impl PlcSimulator {
             let num_elements = ((param_data[offset + 4] as u16) << 8) | (param_data[offset + 5] as u16);
             let db_num = ((param_data[offset + 6] as u16) << 8) | (param_data[offset + 7] as u16);
             let area_code = param_data[offset + 8];
-            let start = ((param_data[offset + 9] as u16) << 8) | (param_data[offset + 10] as u16);
+            // Offset is 3 bytes: high byte contains bit offset in bits 0-2, byte offset in bits 3-7;
+            //   low 2 bytes are the main byte offset
+            let offset_byte0 = param_data[offset + 9] as u32;
+            let offset_byte1 = param_data[offset + 10] as u32;
+            let offset_byte2 = param_data[offset + 11] as u32;
+            let start = ((offset_byte0 & 0x00FF) << 16) | (offset_byte1 << 8) | offset_byte2;
             
             let area = MemoryArea::from_byte(area_code);
             
@@ -710,11 +720,12 @@ impl PlcSimulator {
     }
     
     /// Handle write request (S7 standard response format)
+    #[allow(dead_code)]
     /// 
     /// Response format (S7 standard):
     ///   Param section: [function_code(0x05), item_count] (2 bytes)
     ///   Data section: [return_code(0xFF)] per item (1 byte each)
-    async fn handle_write_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) async fn handle_write_request(&self, pdu_ref: u16, param_data: &[u8]) -> Option<Vec<u8>> {
         if param_data.len() < 2 {
             return None;
         }
@@ -734,7 +745,8 @@ impl PlcSimulator {
             let spec_type = param_data[offset];
             let spec_len = param_data[offset + 1] as usize;
             
-            if spec_type != 0x12 || spec_len < 8 || offset + 2 + spec_len > param_data.len() {
+            // S7 Write Var item spec: same format as Read
+            if spec_type != 0x12 || spec_len < 10 || offset + 2 + spec_len > param_data.len() {
                 offset += 2;
                 data_results.push(0x0A); // Error
                 continue;
@@ -743,7 +755,11 @@ impl PlcSimulator {
             let num_elements = ((param_data[offset + 4] as u16) << 8) | (param_data[offset + 5] as u16);
             let db_num = ((param_data[offset + 6] as u16) << 8) | (param_data[offset + 7] as u16);
             let area_code = param_data[offset + 8];
-            let start = ((param_data[offset + 9] as u16) << 8) | (param_data[offset + 10] as u16);
+            // Offset is 3 bytes (same as Read)
+            let off0 = param_data[offset + 9] as u32;
+            let off1 = param_data[offset + 10] as u32;
+            let off2 = param_data[offset + 11] as u32;
+            let start = ((off0 & 0x00FF) << 16) | (off1 << 8) | off2;
             
             let area = MemoryArea::from_byte(area_code);
             
@@ -797,7 +813,7 @@ impl PlcSimulator {
     }
     
     /// Build user data response
-    fn build_user_data_response(&self, pdu_ref: u16) -> Vec<u8> {
+    pub(crate) fn build_user_data_response(&self, pdu_ref: u16) -> Vec<u8> {
         vec![
             PROTOCOL_ID, PduType::AckData as u8, 0x00, 0x00,
             (pdu_ref >> 8) as u8, (pdu_ref & 0xFF) as u8,

@@ -6,6 +6,9 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
+use std::fs;
+use std::path::Path;
+use chrono::{Datelike, Timelike};
 
 /// Memory area type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,19 +49,71 @@ impl MemoryArea {
 
 /// Data type definition for a memory variable
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataType {
+pub struct VariableDefinition {
     pub name: String,
     pub offset: usize,
-    pub size: usize,
-    pub data_type: String, // "BOOL", "BYTE", "WORD", "DWORD", "INT", "DINT", "REAL", "STRING"
+    #[serde(rename = "type")]
+    pub data_type: String,
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub max_length: Option<usize>,
+    #[serde(default)]
+    pub enum_values: Option<HashMap<String, String>>,
 }
 
-/// Data block definition
+/// Data block configuration from JSON
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataBlockConfig {
+    pub number: u16,
+    pub size: usize,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub variables: Vec<VariableDefinition>,
+}
+
+/// PLC configuration from JSON
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlcConfig {
+    pub plc: PlcInfo,
+    pub memory: MemoryConfig,
+    pub data_blocks: Vec<DataBlockConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlcInfo {
+    #[serde(rename = "type")]
+    pub plc_type: String,
+    pub rack: u8,
+    pub slot: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    pub inputs: AreaConfig,
+    pub outputs: AreaConfig,
+    pub flags: AreaConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AreaConfig {
+    pub size: usize,
+}
+
+/// Data block definition for API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataBlock {
     pub number: u16,
     pub size: usize,
-    pub variables: Vec<DataType>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub variables: Vec<VariableDefinition>,
 }
 
 /// Data block with raw bytes
@@ -66,6 +121,8 @@ pub struct DataBlock {
 pub struct DataBlockData {
     pub number: u16,
     pub bytes: Vec<u8>,
+    pub description: Option<String>,
+    pub variables: Vec<VariableDefinition>,
 }
 
 impl DataBlockData {
@@ -73,6 +130,222 @@ impl DataBlockData {
         Self {
             number,
             bytes: vec![0u8; size],
+            description: None,
+            variables: Vec::new(),
+        }
+    }
+    
+    pub fn with_config(config: &DataBlockConfig) -> Self {
+        let mut db = Self {
+            number: config.number,
+            bytes: vec![0u8; config.size],
+            description: config.description.clone(),
+            variables: config.variables.clone(),
+        };
+        db.init_from_variables();
+        db
+    }
+    
+    /// Initialize bytes from variable definitions
+    fn init_from_variables(&mut self) {
+        let variables = self.variables.clone();
+        for var in &variables {
+            self.set_variable_value(var);
+        }
+    }
+    
+    /// Set variable value from definition
+    fn set_variable_value(&mut self, var: &VariableDefinition) {
+        let offset = var.offset;
+        
+        match var.data_type.to_uppercase().as_str() {
+            "BOOL" => {
+                if let Some(v) = var.value.as_bool() {
+                    if offset < self.bytes.len() {
+                        self.bytes[offset] = if v { 0x01 } else { 0x00 };
+                    }
+                }
+            }
+            "BYTE" => {
+                if let Some(v) = var.value.as_u64() {
+                    if offset < self.bytes.len() {
+                        self.bytes[offset] = v as u8;
+                    }
+                }
+            }
+            "WORD" => {
+                if let Some(v) = var.value.as_u64() {
+                    if offset + 1 < self.bytes.len() {
+                        self.bytes[offset] = (v >> 8) as u8;
+                        self.bytes[offset + 1] = (v & 0xFF) as u8;
+                    }
+                }
+            }
+            "DWORD" => {
+                if let Some(v) = var.value.as_u64() {
+                    if offset + 3 < self.bytes.len() {
+                        self.bytes[offset] = (v >> 24) as u8;
+                        self.bytes[offset + 1] = ((v >> 16) & 0xFF) as u8;
+                        self.bytes[offset + 2] = ((v >> 8) & 0xFF) as u8;
+                        self.bytes[offset + 3] = (v & 0xFF) as u8;
+                    }
+                }
+            }
+            "INT" => {
+                if let Some(v) = var.value.as_i64() {
+                    if offset + 1 < self.bytes.len() {
+                        let val = v as i16;
+                        self.bytes[offset] = (val >> 8) as u8;
+                        self.bytes[offset + 1] = (val & 0xFF) as u8;
+                    }
+                }
+            }
+            "DINT" => {
+                if let Some(v) = var.value.as_i64() {
+                    if offset + 3 < self.bytes.len() {
+                        let val = v as i32;
+                        self.bytes[offset] = (val >> 24) as u8;
+                        self.bytes[offset + 1] = ((val >> 16) & 0xFF) as u8;
+                        self.bytes[offset + 2] = ((val >> 8) & 0xFF) as u8;
+                        self.bytes[offset + 3] = (val & 0xFF) as u8;
+                    }
+                }
+            }
+            "REAL" => {
+                if let Some(v) = var.value.as_f64() {
+                    if offset + 3 < self.bytes.len() {
+                        let bytes = (v as f32).to_be_bytes();
+                        self.bytes[offset..offset + 4].copy_from_slice(&bytes);
+                    }
+                }
+            }
+            "STRING" => {
+                if let Some(s) = var.value.as_str() {
+                    let max_len = var.max_length.unwrap_or(254);
+                    let actual_len = s.len().min(max_len);
+                    if offset + 4 + actual_len <= self.bytes.len() {
+                        // S7 String format: [max_len_hi][max_len_lo][actual_len_hi][actual_len_lo][data...]
+                        self.bytes[offset] = 0xFF;
+                        self.bytes[offset + 1] = 0xFE;
+                        self.bytes[offset + 2] = 0x00;
+                        self.bytes[offset + 3] = actual_len as u8;
+                        self.bytes[offset + 4..offset + 4 + actual_len].copy_from_slice(s.as_bytes());
+                    }
+                }
+            }
+            "DT" | "DATE_AND_TIME" => {
+                // S7 DateAndTime format: BCD encoded
+                if let Some(s) = var.value.as_str() {
+                    // Parse RFC3339 or simple format
+                    let dt_str = if s.contains('T') {
+                        s.to_string()
+                    } else {
+                        format!("{}T00:00:00Z", s)
+                    };
+                    
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&dt_str) {
+                        if offset + 7 < self.bytes.len() {
+                            let year = dt.year();
+                            self.bytes[offset] = ((year % 100) / 10 * 16 + year % 10) as u8; // BCD year
+                            self.bytes[offset + 1] = ((dt.month() / 10) * 16 + dt.month() % 10) as u8; // BCD month
+                            self.bytes[offset + 2] = ((dt.day() / 10) * 16 + dt.day() % 10) as u8; // BCD day
+                            self.bytes[offset + 3] = ((dt.hour() / 10) * 16 + dt.hour() % 10) as u8; // BCD hour
+                            self.bytes[offset + 4] = ((dt.minute() / 10) * 16 + dt.minute() % 10) as u8; // BCD minute
+                            self.bytes[offset + 5] = ((dt.second() / 10) * 16 + dt.second() % 10) as u8; // BCD second
+                            self.bytes[offset + 6] = 0x07; // Day of week (1=Sunday..7=Saturday)
+                            self.bytes[offset + 7] = 0x00; // msec high nibble
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    /// Get variable value as JSON
+    pub fn get_variable_value(&self, var: &VariableDefinition) -> serde_json::Value {
+        let offset = var.offset;
+        
+        match var.data_type.to_uppercase().as_str() {
+            "BOOL" => {
+                if offset < self.bytes.len() {
+                    serde_json::json!(self.bytes[offset] != 0)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "BYTE" => {
+                if offset < self.bytes.len() {
+                    serde_json::json!(self.bytes[offset])
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "WORD" => {
+                if offset + 1 < self.bytes.len() {
+                    let val = ((self.bytes[offset] as u16) << 8) | (self.bytes[offset + 1] as u16);
+                    serde_json::json!(val)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "DWORD" => {
+                if offset + 3 < self.bytes.len() {
+                    let val = ((self.bytes[offset] as u32) << 24)
+                        | ((self.bytes[offset + 1] as u32) << 16)
+                        | ((self.bytes[offset + 2] as u32) << 8)
+                        | (self.bytes[offset + 3] as u32);
+                    serde_json::json!(val)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "INT" => {
+                if offset + 1 < self.bytes.len() {
+                    let val = i16::from_be_bytes([self.bytes[offset], self.bytes[offset + 1]]);
+                    serde_json::json!(val)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "DINT" => {
+                if offset + 3 < self.bytes.len() {
+                    let val = i32::from_be_bytes([
+                        self.bytes[offset],
+                        self.bytes[offset + 1],
+                        self.bytes[offset + 2],
+                        self.bytes[offset + 3],
+                    ]);
+                    serde_json::json!(val)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "REAL" => {
+                if offset + 3 < self.bytes.len() {
+                    let val = f32::from_be_bytes([
+                        self.bytes[offset],
+                        self.bytes[offset + 1],
+                        self.bytes[offset + 2],
+                        self.bytes[offset + 3],
+                    ]);
+                    serde_json::json!(val)
+                } else {
+                    serde_json::json!(null)
+                }
+            }
+            "STRING" => {
+                if offset + 3 < self.bytes.len() {
+                    let actual_len = self.bytes[offset + 3] as usize;
+                    if offset + 4 + actual_len <= self.bytes.len() {
+                        if let Ok(s) = std::str::from_utf8(&self.bytes[offset + 4..offset + 4 + actual_len]) {
+                            return serde_json::json!(s);
+                        }
+                    }
+                }
+                serde_json::json!(null)
+            }
+            _ => serde_json::json!(null),
         }
     }
 }
@@ -100,7 +373,33 @@ impl PlcMemory {
         }
     }
     
-    /// Initialize default data blocks
+    /// Load configuration from JSON file
+    pub fn from_config_file(path: &Path) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        
+        let config: PlcConfig = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
+        
+        let mut memory = Self {
+            inputs: vec![0u8; config.memory.inputs.size],
+            outputs: vec![0u8; config.memory.outputs.size],
+            flags: vec![0u8; config.memory.flags.size],
+            data_blocks: HashMap::new(),
+            counters: vec![0u16; 64],
+            timers: vec![0u32; 64],
+        };
+        
+        // Initialize data blocks from config
+        for db_config in &config.data_blocks {
+            let db = DataBlockData::with_config(db_config);
+            memory.data_blocks.insert(db.number, db);
+        }
+        
+        Ok(memory)
+    }
+    
+    /// Initialize default data blocks (fallback if no config)
     pub fn init_default_db(&mut self) {
         self.add_db(1, 256);
         self.add_db(2, 128);
@@ -135,21 +434,7 @@ impl PlcMemory {
         });
         self.data_blocks.insert(20, db20);
         
-        // DB100 - Filling Station Status (灌装站状态)
-        // Structure based on FillStationStatus from Java commonDataBlockCodec
-        // offset 0-3:   status (DWORD) - 0=IDLE, 1=RUNNING, 2=PAUSED, 3=COMPLETED, 4=ERROR
-        // offset 4-7:   taskId (DWORD) - 当前任务ID
-        // offset 8-11:  progress (REAL) - 进度 0.0-100.0
-        // offset 12-15: volumeDispensed (REAL) - 已灌装量 (L)
-        // offset 16-19: targetVolume (REAL) - 目标灌装量 (L)
-        // offset 20-23: flowRate (REAL) - 瞬时流量 (L/min)
-        // offset 24-27: pressure (REAL) - 压力 (bar)
-        // offset 28-31: temperature (REAL) - 温度 (℃)
-        // offset 32-35: fillStationId (DWORD) - 工位ID
-        // offset 36-39: startTime (DWORD) - 开始时间戳 (Unix seconds)
-        // offset 40-43: endTime (DWORD) - 结束时间戳 (Unix seconds)
-        // offset 44:    errorCode (BYTE) - 错误码 0=无错误
-        // offset 45-108: reserved (64 bytes)
+        // DB100 - Filling Station Status
         let mut db100 = DataBlockData::new(100, 256);
         
         // status: RUNNING (1)
@@ -213,19 +498,7 @@ impl PlcMemory {
         
         self.data_blocks.insert(100, db100);
 
-        // DB401 - Filling Station Status (灌装站运行状态)
-        // Size: 38 bytes (matches FillStation.status_db_size)
-        // offset 0-3:   stationStatus (DWORD) - 0=IDLE, 1=RUNNING, 2=PAUSED, 3=COMPLETED, 4=ERROR
-        // offset 4-7:   currentTaskId (DWORD) - 当前任务ID
-        // offset 8-11:  fillProgress (REAL) - 灌装进度 0.0-100.0
-        // offset 12-15: currentVolume (REAL) - 当前已灌装量 (L)
-        // offset 16-19: targetVolume (REAL) - 目标灌装量 (L)
-        // offset 20-23: flowRate (REAL) - 瞬时流量 (L/min)
-        // offset 24-27: pressure (REAL) - 压力 (bar)
-        // offset 28-31: temperature (REAL) - 温度 (℃)
-        // offset 32-35: elapsedSeconds (DWORD) - 已运行秒数
-        // offset 36:    errorCode (BYTE) - 错误码 0=无错误
-        // offset 37:    reserved (BYTE)
+        // DB401 - Filling Station Status
         let mut db401 = DataBlockData::new(401, 38);
 
         // stationStatus: RUNNING (1)
@@ -276,15 +549,7 @@ impl PlcMemory {
 
         self.data_blocks.insert(401, db401);
 
-        // DB2991 - Filling Station Report (灌装站报告数据)
-        // Size: 808 bytes (matches FillStation.report_db_size)
-        // offset 0-3:     reportCount (DWORD) - 报告数量
-        // offset 4-7:     reportIndex (DWORD) - 当前报告索引
-        // offset 8-471:   reportData[50] - 50条报告记录, 每条 9.2 bytes (动态)
-        // offset 472-479: startTime (S7 DateAndTime, BCD编码)
-        // offset 480-487: endTime (S7 DateAndTime, BCD编码)
-        // offset 780-787: taskId (8 bytes)
-        // offset 788-807: reserved
+        // DB2991 - Filling Station Report
         let mut db2991 = DataBlockData::new(2991, 808);
 
         // reportCount: 1
@@ -304,17 +569,16 @@ impl PlcMemory {
         db2991.bytes[780..788].copy_from_slice(task_id);
 
         // startTime at offset 472: S7 DateAndTime BCD format
-        // 2026-04-19 18:00:00 → BCD: year=0x26, month=0x04, day=0x19, hour=0x18, min=0x00, sec=0x00, dow=0x07, msec_hi=0x00
         db2991.bytes[472] = 0x26; // year (BCD)
         db2991.bytes[473] = 0x04; // month (BCD)
         db2991.bytes[474] = 0x19; // day (BCD)
         db2991.bytes[475] = 0x18; // hour (BCD)
         db2991.bytes[476] = 0x00; // minute (BCD)
         db2991.bytes[477] = 0x00; // second (BCD)
-        db2991.bytes[478] = 0x07; // day of week (BCD, 1=Sunday..7=Saturday)
+        db2991.bytes[478] = 0x07; // day of week (BCD)
         db2991.bytes[479] = 0x00; // msec high nibble
 
-        // endTime at offset 480: 2026-04-19 18:05:00
+        // endTime at offset 480
         db2991.bytes[480] = 0x26;
         db2991.bytes[481] = 0x04;
         db2991.bytes[482] = 0x19;
@@ -337,12 +601,13 @@ impl PlcMemory {
         self.data_blocks.remove(&number).is_some()
     }
     
-    /// Get data block info
+    /// Get data block info with variables
     pub fn get_db_info(&self, number: u16) -> Option<DataBlock> {
         self.data_blocks.get(&number).map(|db| DataBlock {
             number: db.number,
             size: db.bytes.len(),
-            variables: Vec::new(),
+            description: db.description.clone(),
+            variables: db.variables.clone(),
         })
     }
     
@@ -351,7 +616,8 @@ impl PlcMemory {
         self.data_blocks.values().map(|db| DataBlock {
             number: db.number,
             size: db.bytes.len(),
-            variables: Vec::new(),
+            description: db.description.clone(),
+            variables: db.variables.clone(),
         }).collect()
     }
     
@@ -501,6 +767,11 @@ impl PlcMemory {
         self.data_blocks.get(&db_num).map(|db| db.bytes.len())
     }
     
+    /// Get data block data (for API access)
+    pub fn get_db_data(&self, db_num: u16) -> Option<&DataBlockData> {
+        self.data_blocks.get(&db_num)
+    }
+    
     /// Get inputs as bytes
     pub fn get_inputs(&self) -> Vec<u8> {
         self.inputs.clone()
@@ -542,4 +813,10 @@ pub fn create_shared_memory() -> SharedMemory {
     let mut memory = PlcMemory::new();
     memory.init_default_db();
     Arc::new(RwLock::new(memory))
+}
+
+/// Create shared memory from config file
+pub fn create_shared_memory_from_config(path: &Path) -> Result<SharedMemory, String> {
+    let memory = PlcMemory::from_config_file(path)?;
+    Ok(Arc::new(RwLock::new(memory)))
 }

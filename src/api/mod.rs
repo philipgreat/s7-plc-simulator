@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::memory::{SharedMemory, MemoryArea, PlcMemory};
+use crate::memory::{SharedMemory, MemoryArea, PlcMemory, DataBlock, VariableDefinition};
 use crate::{ConnectionList, ClientConnection};
 
 /// Application state
@@ -51,8 +51,37 @@ pub struct DbInfo {
 pub struct DbResponse {
     pub number: u16,
     pub size: usize,
+    pub description: Option<String>,
     pub hex: String,
     pub data: Vec<DbDataItem>,
+    pub variables: Vec<VariableWithValue>,
+}
+
+#[derive(Serialize)]
+pub struct VariableWithValue {
+    pub name: String,
+    pub offset: usize,
+    #[serde(rename = "type")]
+    pub data_type: String,
+    pub value: serde_json::Value,
+    pub raw_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Get data block with variables (for internal use)
+#[derive(Serialize)]
+pub struct DbWithVariables {
+    pub number: u16,
+    pub size: usize,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub variables: Vec<VariableDefinition>,
 }
 
 #[derive(Serialize)]
@@ -132,8 +161,9 @@ pub async fn get_db(
     let memory = state.memory.read().unwrap();
     
     match memory.get_db_info(db_number) {
-        Some(db) => {
-            let bytes = memory.read(MemoryArea::DataBlocks, db_number, 0, db.size)
+        Some(db_info) => {
+            let db_data = memory.get_db_data(db_number);
+            let bytes = memory.read(MemoryArea::DataBlocks, db_number, 0, db_info.size)
                 .unwrap_or_default();
             
             // Format data for display
@@ -153,16 +183,54 @@ pub async fn get_db(
                 });
             }
             
+            // Format variables with current values
+            let variables = if let Some(db) = db_data {
+                db.variables.iter().map(|var| {
+                    let value = db.get_variable_value(var);
+                    let raw_bytes = db.bytes.get(var.offset..var.offset + get_type_size(&var.data_type)).unwrap_or(&[]);
+                    VariableWithValue {
+                        name: var.name.clone(),
+                        offset: var.offset,
+                        data_type: var.data_type.clone(),
+                        value,
+                        raw_hex: raw_bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" "),
+                        unit: var.unit.clone(),
+                        description: var.description.clone(),
+                        enum_values: var.enum_values.clone(),
+                    }
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            
             Json(DbResponse {
-                number: db.number,
-                size: db.size,
+                number: db_info.number,
+                size: db_info.size,
+                description: db_info.description.clone(),
                 hex: hex::encode(&bytes),
                 data: items,
+                variables,
             }).into_response()
         }
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({
             "error": format!("DB{}", db_number)
         }))).into_response(),
+    }
+}
+
+/// Get size in bytes for a data type
+fn get_type_size(data_type: &str) -> usize {
+    match data_type.to_uppercase().as_str() {
+        "BOOL" => 1,
+        "BYTE" => 1,
+        "WORD" => 2,
+        "DWORD" => 4,
+        "INT" => 2,
+        "DINT" => 4,
+        "REAL" => 4,
+        "STRING" => 258, // 4 header + 254 max
+        "DT" | "DATE_AND_TIME" => 8,
+        _ => 1,
     }
 }
 
